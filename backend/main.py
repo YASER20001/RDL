@@ -5,6 +5,7 @@ Run:  streamlit run main.py
 
 import uuid
 import io
+import re
 import pandas as pd
 import streamlit as st
 from rapidfuzz import fuzz, process
@@ -144,77 +145,48 @@ READERS = {
 # Harmonization engine
 # ──────────────────────────────────────────────────────────────────────
 def _tokenize(text):
-    """Split text into lowercase word tokens, dropping short noise words."""
-    import re
     words = set(re.findall(r'[a-z]{2,}', text.lower()))
-    # Remove very common filler words that cause false positives
     noise = {"the", "and", "for", "with", "from", "that", "this", "its"}
     return words - noise
 
 
 def _has_word_overlap(name_a, name_b):
-    """Check if two names share at least one meaningful word.
-    Prevents false matches like 'all' ↔ 'wall', 'box' ↔ 'block'.
-    For very short names (1 word), require exact word match.
-    """
     tokens_a = _tokenize(name_a)
     tokens_b = _tokenize(name_b)
     if not tokens_a or not tokens_b:
-        # If either is empty after tokenization, allow fuzzy to decide
         return True
-    overlap = tokens_a & tokens_b
-    if overlap:
+    if tokens_a & tokens_b:
         return True
-    # Also check if any token in A is a substring of a token in B or vice versa
-    # (handles "heat exchanger" vs "exchanger" or "pump" vs "centrifugal pump")
     for a in tokens_a:
         for b in tokens_b:
-            if len(a) >= 3 and len(b) >= 3:
-                if a in b or b in a:
-                    return True
+            if len(a) >= 3 and len(b) >= 3 and (a in b or b in a):
+                return True
     return False
 
 
 def _expand_compound_names(candidates):
-    """Expand candidates with '/' separated compound names.
-    'Junction Box / Splice Case' → also try 'Junction Box' and 'Splice Case'
-    separately, so fuzzy matching finds the right sub-part.
-    Returns (expanded_names, index_map) where index_map[i] → original candidate index.
-    """
     expanded_names = []
     index_map = []
     for i, c in enumerate(candidates):
-        # Always include the full name
         expanded_names.append(c["name"])
         index_map.append(i)
-        # If it contains '/', also add each part as a matchable alias
         if "/" in c["name"]:
-            parts = [p.strip() for p in c["name"].split("/") if p.strip()]
-            for part in parts:
+            for part in [p.strip() for p in c["name"].split("/") if p.strip()]:
                 expanded_names.append(part)
                 index_map.append(i)
     return expanded_names, index_map
 
 
 def fuzzy_match(name, candidates, threshold):
-    """Return the single best match above threshold, or None.
-    Handles compound names with '/' (e.g. 'Junction Box / Splice Case').
-    Also validates word overlap to prevent false positives.
-    """
     if not candidates:
         return None
-
-    # Expand compound '/' names so sub-parts can be matched individually
     expanded_names, index_map = _expand_compound_names(candidates)
-
-    # Try the full query name first, then try each '/' sub-part if present
     query_variants = [name]
     if "/" in name:
         query_variants += [p.strip() for p in name.split("/") if p.strip()]
 
     best_result = None
     best_score = 0
-
     for q in query_variants:
         result = process.extractOne(
             q, expanded_names, scorer=fuzz.token_sort_ratio, score_cutoff=threshold,
@@ -225,19 +197,14 @@ def fuzzy_match(name, candidates, threshold):
 
     if best_result is None:
         return None
-
     matched_name, score, exp_idx = best_result
     orig_idx = index_map[exp_idx]
-
-    # Word overlap check — reject if names share no meaningful words
     if not _has_word_overlap(name, matched_name) and not _has_word_overlap(name, candidates[orig_idx]["name"]):
         return None
-
     return {**candidates[orig_idx], "score": int(round(score))}
 
 
 def classify_match(score):
-    """Return (status, confidence) for a given score."""
     if score >= 95:
         return "Exact Match", "High"
     elif score >= 85:
@@ -249,16 +216,12 @@ def classify_match(score):
 
 
 def run_harmonization():
-    """Harmonize: merge masters into unified rows, match others against them.
-
-    Dual master: Master-1 rows are matched 1:1 against Master-2. Unmatched
-    Master-2 rows are appended. Each row has both master IDs/names merged.
-    Non-master sources are then matched against the canonical name.
-    """
+    """Masters = ONE unified reference. Then compare each non-master source."""
     masters = st.session_state.masters
     files = st.session_state.files
     threshold = st.session_state.match_threshold
 
+    # Step 1: Build unified master rows
     if len(masters) == 1:
         master_records = files[masters[0]]["records"]
         merged = []
@@ -277,10 +240,9 @@ def run_harmonization():
         m1_records = files[m1]["records"]
         m2_records = list(files[m2]["records"])
         m2_used = set()
-
-        # Deduplicate master-1
         seen = set()
         merged = []
+
         for r1 in m1_records:
             key = r1["name"].strip().lower()
             if key in seen:
@@ -298,7 +260,6 @@ def run_harmonization():
                 entry["cross_score"] = match["score"]
             merged.append(entry)
 
-        # Append unmatched + deduplicated master-2 records
         for i, r2 in enumerate(m2_records):
             if i not in m2_used:
                 key = r2["name"].strip().lower()
@@ -309,10 +270,10 @@ def run_harmonization():
                         "canonical_name": r2["name"],
                     })
 
-    add_log(f"Master set from {masters}: {len(merged)} unique rows (threshold={threshold}%)")
+    add_log(f"Master reference built from {masters}: {len(merged)} unique classes (threshold={threshold}%)")
 
-    # Non-master sources
-    other = {k: v["records"] for k, v in files.items() if k not in masters}
+    # Step 2: Compare each non-master source against the unified master
+    non_masters = {k: v["records"] for k, v in files.items() if k not in masters}
 
     harmonized = []
     for idx, row in enumerate(merged):
@@ -325,7 +286,7 @@ def run_harmonization():
             "matches": {},
             "gaps": [],
         }
-        for src, candidates in other.items():
+        for src, candidates in non_masters.items():
             match = fuzzy_match(row["canonical_name"], candidates, threshold)
             if match:
                 entry["matches"][src] = match
@@ -333,7 +294,7 @@ def run_harmonization():
                 entry["gaps"].append(src)
         harmonized.append(entry)
 
-    add_log(f"Harmonization complete: {len(harmonized)} classes")
+    add_log(f"Harmonization complete: {len(harmonized)} classes, compared against {list(non_masters.keys())}")
     return harmonized
 
 
@@ -391,20 +352,18 @@ def load_demo_data():
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Export helper — clean organized Excel
+# Export — clean organized Excel
 # ──────────────────────────────────────────────────────────────────────
 def build_export_df(classes):
-    """Build a clean, well-organized DataFrame for export.
+    """Build export DataFrame.
 
-    Layout for dual-master (e.g. KBR + CFIHOS):
-        # | Status | Confidence | KBR ID | KBR Name | CFIHOS ID | CFIHOS Name |
-        Master Match% | ARAMCO ID | ARAMCO Name | ARAMCO Match% | ARAMCO Status | ...
-        | Gap Sources | Gap Count
-
-    Gaps are clearly marked as "GAP - NO MATCH" in the Name cells.
+    Layout:
+      # | MASTER REFERENCE (one block) | Source1 columns | Source2 columns | Gap In
+      Masters are shown together as one reference block.
+      Each non-master source gets: ID | Name | Match% | Status
+      Last column: "Gap In" lists which sources are missing, or "No Gaps".
     """
     masters = st.session_state.masters
-    # Collect ALL non-master sources (even if only in gaps)
     non_master_sources = set()
     for c in classes:
         non_master_sources.update(c["matches"].keys())
@@ -413,78 +372,42 @@ def build_export_df(classes):
 
     rows = []
     for c in classes:
-        # --- Overall status ---
-        total_other = len(non_master_sources)
-        matched_count = len(c["matches"])
         gap_count = len(c["gaps"])
 
-        has_master_cross = len(masters) == 2 and c.get("cross_score") is not None
-        has_both_masters = len(c["master_entries"]) == len(masters)
-        missing_master = len(masters) == 2 and not has_both_masters
+        row = {"#": c["index"]}
 
-        if gap_count == 0 and not missing_master:
-            overall_status = "FULLY MATCHED"
-        elif gap_count == total_other and missing_master and matched_count == 0:
-            overall_status = "NO MATCHES"
-        elif gap_count == total_other and not missing_master:
-            # Masters matched each other but no non-master source matched
-            overall_status = "MASTERS ONLY - NO OTHER MATCHES"
-        elif gap_count > 0 or missing_master:
-            overall_status = "PARTIAL - HAS GAPS"
-        else:
-            overall_status = "MATCHED"
-
-        # Overall confidence from worst match
-        all_scores = [m["score"] for m in c["matches"].values()]
-        if c.get("cross_score"):
-            all_scores.append(c["cross_score"])
-        if all_scores:
-            min_score = min(all_scores)
-            _, overall_conf = classify_match(min_score)
-        else:
-            overall_conf = "None"
-
-        row = {
-            "#": c["index"],
-            "Overall Status": overall_status,
-            "Confidence": overall_conf,
-        }
-
-        # --- Master columns ---
+        # --- MASTER REFERENCE block ---
         for m in masters:
             label = FILE_TYPES.get(m, m)
             me = c["master_entries"].get(m)
-            row[f"{label} ID"] = me["id"] if me else ""
-            row[f"{label} Name"] = me["name"] if me else "GAP - NOT IN THIS MASTER"
+            row[f"Master ({label}) ID"] = me["id"] if me else ""
+            row[f"Master ({label}) Name"] = me["name"] if me else ""
 
         if len(masters) == 2:
             cs = c.get("cross_score")
-            if cs is not None:
-                status, conf = classify_match(cs)
-                row["Masters Match%"] = cs
-                row["Masters Status"] = status
-            else:
-                row["Masters Match%"] = ""
-                row["Masters Status"] = "GAP - NO CROSS-MATCH"
+            row["Masters Cross-Match%"] = cs if cs is not None else ""
 
-        # --- Non-master columns ---
+        # --- Each non-master source ---
         for s in non_master_sources:
             label = FILE_TYPES.get(s, s)
             m = c["matches"].get(s)
             if m:
-                status, conf = classify_match(m["score"])
+                status, _ = classify_match(m["score"])
                 row[f"{label} ID"] = m["id"]
                 row[f"{label} Name"] = m["name"]
                 row[f"{label} Match%"] = m["score"]
                 row[f"{label} Status"] = status
             else:
                 row[f"{label} ID"] = ""
-                row[f"{label} Name"] = "GAP - NO MATCH"
-                row[f"{label} Match%"] = 0
+                row[f"{label} Name"] = ""
+                row[f"{label} Match%"] = ""
                 row[f"{label} Status"] = "GAP"
 
         # --- Gap summary ---
-        row["Gap Sources"] = " | ".join(FILE_TYPES.get(g, g) for g in c["gaps"]) if c["gaps"] else ""
+        if gap_count == 0:
+            row["Gap In"] = "No Gaps"
+        else:
+            row["Gap In"] = " | ".join(FILE_TYPES.get(g, g) for g in c["gaps"])
         row["Gap Count"] = gap_count
 
         rows.append(row)
@@ -493,133 +416,107 @@ def build_export_df(classes):
 
 
 def build_excel_bytes(classes):
-    """Build a styled Excel file with multiple sheets."""
     buf = io.BytesIO()
+    masters = st.session_state.masters
 
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        # Sheet 1: Harmonization Results
+        # Sheet 1: Harmonization
         df = build_export_df(classes)
         df.to_excel(writer, sheet_name="Harmonization Results", index=False)
 
         # Sheet 2: Gap Analysis
         gap_rows = []
-        masters = st.session_state.masters
         for c in classes:
             for g in c["gaps"]:
+                present_in = [FILE_TYPES.get(m, m) for m in masters if m in c["master_entries"]]
+                present_in += [FILE_TYPES.get(s, s) for s in c["matches"]]
                 gap_rows.append({
                     "#": c["index"],
                     "Equipment Class": c["canonical_name"],
-                    "Present In": ", ".join(
-                        FILE_TYPES.get(m, m) for m in masters if m in c["master_entries"]
-                    ) + (
-                        ", " + ", ".join(
-                            FILE_TYPES.get(s, s) for s in c["matches"]
-                        ) if c["matches"] else ""
-                    ),
-                    "MISSING From": FILE_TYPES.get(g, g),
-                    "Action Required": f"Add '{c['canonical_name']}' to {FILE_TYPES.get(g, g)} or confirm exclusion",
+                    "Found In": ", ".join(present_in),
+                    "Gap In": FILE_TYPES.get(g, g),
+                    "Action": f"Add '{c['canonical_name']}' to {FILE_TYPES.get(g, g)} or confirm exclusion",
                 })
-        if gap_rows:
-            gap_df = pd.DataFrame(gap_rows)
-        else:
-            gap_df = pd.DataFrame(columns=["#", "Equipment Class", "Present In", "MISSING From", "Action Required"])
+        gap_df = pd.DataFrame(gap_rows) if gap_rows else pd.DataFrame(
+            columns=["#", "Equipment Class", "Found In", "Gap In", "Action"]
+        )
         gap_df.to_excel(writer, sheet_name="Gap Analysis", index=False)
 
-        # Sheet 3: Summary Statistics
+        # Sheet 3: Summary
         total = len(classes)
         non_master_sources = set()
         for c in classes:
             non_master_sources.update(c["matches"].keys())
             non_master_sources.update(c["gaps"])
 
+        no_gaps = sum(1 for c in classes if not c["gaps"])
         summary_rows = [
             {"Metric": "Total Equipment Classes", "Value": total},
-            {"Metric": "Masters", "Value": ", ".join(FILE_TYPES.get(m, m) for m in masters)},
+            {"Metric": "Master Reference", "Value": " + ".join(FILE_TYPES.get(m, m) for m in masters)},
+            {"Metric": "Compared Against", "Value": ", ".join(FILE_TYPES.get(s, s) for s in sorted(non_master_sources))},
             {"Metric": "Match Threshold", "Value": f"{st.session_state.match_threshold}%"},
+            {"Metric": "Classes with No Gaps", "Value": f"{no_gaps} / {total}"},
             {"Metric": "Total Gap Entries", "Value": sum(len(c["gaps"]) for c in classes)},
         ]
-        fully = sum(1 for c in classes if not c["gaps"] and (len(masters) == 1 or c.get("cross_score") is not None))
-        summary_rows.append({"Metric": "Fully Matched Classes", "Value": f"{fully} / {total}"})
-
         for src in sorted(non_master_sources):
             cnt = sum(1 for c in classes if src in c["matches"])
             pct = int(round(cnt / total * 100)) if total else 0
+            gap_cnt = total - cnt
             summary_rows.append({
-                "Metric": f"{FILE_TYPES.get(src, src)} Match Rate",
-                "Value": f"{cnt}/{total} ({pct}%)",
+                "Metric": f"{FILE_TYPES.get(src, src)}",
+                "Value": f"Matched: {cnt}/{total} ({pct}%) — Gaps: {gap_cnt}",
             })
+        pd.DataFrame(summary_rows).to_excel(writer, sheet_name="Summary", index=False)
 
-        summary_df = pd.DataFrame(summary_rows)
-        summary_df.to_excel(writer, sheet_name="Summary", index=False)
-
-        # Auto-fit column widths (approximate)
+        # Auto-fit columns
         for sheet_name in writer.sheets:
             ws = writer.sheets[sheet_name]
             for col_cells in ws.columns:
-                max_len = 0
-                col_letter = col_cells[0].column_letter
-                for cell in col_cells:
-                    val = str(cell.value) if cell.value is not None else ""
-                    max_len = max(max_len, len(val))
-                ws.column_dimensions[col_letter].width = min(max_len + 3, 50)
+                max_len = max(len(str(cell.value or "")) for cell in col_cells)
+                ws.column_dimensions[col_cells[0].column_letter].width = min(max_len + 3, 50)
 
     buf.seek(0)
     return buf.getvalue()
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Graphviz connection diagram builder
+# Graphviz connection diagram
 # ──────────────────────────────────────────────────────────────────────
 def build_connection_graph(entry):
     masters = st.session_state.masters
-    lines = []
-    lines.append("digraph G {")
+    lines = ["digraph G {"]
     lines.append('  rankdir=LR;')
     lines.append('  node [shape=box, style="filled,rounded", fontname="Arial", fontsize=11];')
     lines.append('  edge [fontname="Arial", fontsize=9];')
 
-    canon = entry["canonical_name"].replace('"', '\\"')
-    lines.append(f'  center [label="{canon}", fillcolor="#fef3c7", color="#d97706", penwidth=2];')
-
-    node_id = 0
+    # Master reference node (single box for the combined master)
+    master_parts = []
     for m in masters:
         me = entry["master_entries"].get(m)
         if me:
-            color = SOURCE_COLORS.get(m, "#6b7280")
-            name_esc = me["name"].replace('"', '\\"')
-            label = f'{FILE_TYPES[m]}\\n{name_esc}\\nID: {me["id"]}'
-            nid = f"m{node_id}"
-            lines.append(f'  {nid} [label="{label}", fillcolor="{color}20", color="{color}", fontcolor="#1f2937"];')
-            score_label = ""
-            if len(masters) == 2 and entry.get("cross_score") is not None:
-                score_label = f' [label="{entry["cross_score"]}%", color="{color}", fontcolor="{color}"]'
-            elif len(masters) == 1:
-                score_label = f' [label="master", color="{color}", fontcolor="{color}"]'
-            lines.append(f'  {nid} -> center{score_label};')
-            node_id += 1
-        else:
-            color = "#ef4444"
-            nid = f"m{node_id}"
-            label = f'{FILE_TYPES[m]}\\nNOT IN THIS MASTER'
-            lines.append(f'  {nid} [label="{label}", fillcolor="#fee2e2", color="{color}", fontcolor="{color}", style="filled,rounded,dashed"];')
-            lines.append(f'  {nid} -> center [style=dashed, color="{color}"];')
-            node_id += 1
+            master_parts.append(f'{FILE_TYPES[m]}: {me["name"]} ({me["id"]})')
+    master_label = "MASTER REFERENCE\\n" + "\\n".join(
+        p.replace('"', '\\"') for p in master_parts
+    )
+    lines.append(f'  master [label="{master_label}", fillcolor="#dbeafe", color="#2563eb", penwidth=2, fontcolor="#1e3a5f"];')
 
+    node_id = 0
+    # Non-master matches
     for src, match in entry["matches"].items():
         color = SOURCE_COLORS.get(src, "#6b7280")
         name_esc = match["name"].replace('"', '\\"')
         label = f'{FILE_TYPES.get(src, src)}\\n{name_esc}\\nID: {match["id"]}'
         nid = f"n{node_id}"
         lines.append(f'  {nid} [label="{label}", fillcolor="{color}20", color="{color}", fontcolor="#1f2937"];')
-        lines.append(f'  center -> {nid} [label="{match["score"]}%", color="{color}", fontcolor="{color}"];')
+        lines.append(f'  master -> {nid} [label="{match["score"]}%", color="{color}", fontcolor="{color}"];')
         node_id += 1
 
+    # Gap nodes
     for g in entry["gaps"]:
-        color = "#ef4444"
-        label = f'{FILE_TYPES.get(g, g)}\\nGAP - NO MATCH'
+        label = f'{FILE_TYPES.get(g, g)}\\nGAP'
         nid = f"g{node_id}"
-        lines.append(f'  {nid} [label="{label}", fillcolor="#fee2e2", color="{color}", fontcolor="{color}", style="filled,rounded,dashed"];')
-        lines.append(f'  center -> {nid} [style=dashed, color="{color}"];')
+        lines.append(f'  {nid} [label="{label}", fillcolor="#fee2e2", color="#ef4444", fontcolor="#ef4444", style="filled,rounded,dashed"];')
+        lines.append(f'  master -> {nid} [style=dashed, color="#ef4444", label="NO MATCH", fontcolor="#ef4444"];')
         node_id += 1
 
     lines.append("}")
@@ -634,31 +531,22 @@ def build_overview_graph(classes, max_rows=20):
         all_sources.update(c["gaps"])
     all_sources = sorted(all_sources)
 
-    lines = []
-    lines.append("digraph G {")
+    lines = ["digraph G {"]
     lines.append('  rankdir=LR;')
     lines.append('  node [shape=box, style="filled,rounded", fontname="Arial", fontsize=10];')
     lines.append('  edge [fontname="Arial", fontsize=8];')
-    lines.append('  nodesep=0.3; ranksep=1.5;')
+    lines.append('  nodesep=0.3; ranksep=1.2;')
 
-    display = classes[:max_rows]
-
-    for idx, c in enumerate(display):
+    for idx, c in enumerate(classes[:max_rows]):
+        # Master node (combined)
+        master_label_parts = []
         for m in masters:
             me = c["master_entries"].get(m)
             if me:
-                color = SOURCE_COLORS.get(m, "#6b7280")
-                nid = f"r{idx}_{m}"
-                name_esc = me["name"][:25].replace('"', '\\"')
-                label = f'{me["id"]}\\n{name_esc}'
-                lines.append(f'  {nid} [label="{label}", fillcolor="{color}15", color="{color}"];')
-
-        if len(masters) == 2:
-            m1, m2 = masters
-            if m1 in c["master_entries"] and m2 in c["master_entries"]:
-                score = c.get("cross_score", "")
-                lbl = f'{score}%' if score else ""
-                lines.append(f'  r{idx}_{m1} -> r{idx}_{m2} [label="{lbl}", color="#6b7280", dir=both];')
+                master_label_parts.append(me["name"][:25].replace('"', '\\"'))
+        master_label = "\\n".join(master_label_parts) if master_label_parts else "?"
+        mid = f"r{idx}_master"
+        lines.append(f'  {mid} [label="{master_label}", fillcolor="#dbeafe", color="#2563eb"];')
 
         for src in all_sources:
             match = c["matches"].get(src)
@@ -666,15 +554,11 @@ def build_overview_graph(classes, max_rows=20):
             nid = f"r{idx}_{src}"
             if match:
                 name_esc = match["name"][:25].replace('"', '\\"')
-                label = f'{match["id"]}\\n{name_esc}'
-                lines.append(f'  {nid} [label="{label}", fillcolor="{color}15", color="{color}"];')
-                first_m = masters[0] if masters[0] in c["master_entries"] else masters[-1]
-                lines.append(f'  r{idx}_{first_m} -> {nid} [label="{match["score"]}%", color="{color}"];')
+                lines.append(f'  {nid} [label="{name_esc}", fillcolor="{color}15", color="{color}"];')
+                lines.append(f'  {mid} -> {nid} [label="{match["score"]}%", color="{color}"];')
             else:
-                label = f'GAP'
-                lines.append(f'  {nid} [label="{label}", fillcolor="#fee2e2", color="#ef4444", style="filled,rounded,dashed"];')
-                first_m = masters[0] if masters[0] in c["master_entries"] else masters[-1]
-                lines.append(f'  r{idx}_{first_m} -> {nid} [style=dashed, color="#ef4444"];')
+                lines.append(f'  {nid} [label="GAP", fillcolor="#fee2e2", color="#ef4444", style="filled,rounded,dashed"];')
+                lines.append(f'  {mid} -> {nid} [style=dashed, color="#ef4444"];')
 
     lines.append("}")
     return "\n".join(lines)
@@ -683,7 +567,6 @@ def build_overview_graph(classes, max_rows=20):
 # ══════════════════════════════════════════════════════════════════════
 # UI
 # ══════════════════════════════════════════════════════════════════════
-
 st.markdown("""
 <div style="background: linear-gradient(90deg, #b91c1c, #7f1d1d); padding: 1.5rem 2rem; border-radius: 0.75rem; margin-bottom: 1rem;">
     <h1 style="color: white; margin: 0; font-size: 1.8rem;">KBR RDL Data Harmonizer</h1>
@@ -707,9 +590,9 @@ tab_upload, tab_dashboard, tab_gaps, tab_visual, tab_search, tab_batch, tab_logs
 with tab_upload:
     st.subheader("Step 1 — Choose Master File(s)")
     st.caption(
-        "Select **1 or 2** file types as the master source. "
-        "The master defines the base set of equipment classes; "
-        "all other uploaded files are fuzzy-matched against it."
+        "Select **1 or 2** file types as the master reference. "
+        "They are treated as **one combined object**. "
+        "All other uploaded files are compared against this master."
     )
 
     master_options = list(FILE_TYPES.keys())
@@ -719,79 +602,63 @@ with tab_upload:
         default=st.session_state.masters or [],
         format_func=lambda k: FILE_TYPES[k],
         max_selections=2,
-        help="Pick 1 or 2 systems to use as the master reference.",
     )
-
     if selected_masters != st.session_state.masters:
         st.session_state.masters = selected_masters
-        add_log(f"Master config changed to: {selected_masters}")
 
     if len(selected_masters) == 0:
-        st.warning("Select at least one master to run harmonization.")
+        st.warning("Select at least one master.")
     elif len(selected_masters) == 1:
-        st.info(f"**Single master**: {FILE_TYPES[selected_masters[0]]} will be the base.")
+        st.info(f"**Master**: {FILE_TYPES[selected_masters[0]]}")
     else:
         st.info(
-            f"**Dual master**: {FILE_TYPES[selected_masters[0]]} + "
-            f"{FILE_TYPES[selected_masters[1]]} will be merged row-by-row."
+            f"**Combined Master**: {FILE_TYPES[selected_masters[0]]} + "
+            f"{FILE_TYPES[selected_masters[1]]}"
         )
 
-    # Match threshold slider
     st.divider()
     threshold = st.slider(
-        "Match Threshold (%)",
-        min_value=50, max_value=100, value=st.session_state.match_threshold,
-        help="Minimum fuzzy score to count as a match. Below this = GAP. "
-             "75% is recommended — rejects weak matches like 'Junction Box' vs 'Function Block'.",
+        "Match Threshold (%)", min_value=50, max_value=100,
+        value=st.session_state.match_threshold,
+        help="Minimum score to count as a match. Below this = GAP.",
     )
     if threshold != st.session_state.match_threshold:
         st.session_state.match_threshold = threshold
 
     st.divider()
-
     st.subheader("Step 2 — Upload Data Files")
     cols = st.columns(3)
     for i, (key, label) in enumerate(FILE_TYPES.items()):
         with cols[i % 3]:
             is_master = key in st.session_state.masters
             badge = " MASTER" if is_master else ""
-            uploaded = st.file_uploader(
-                f"{label}{badge}",
-                type=["xlsx", "xls", "csv"],
-                key=f"upload_{key}",
-            )
+            uploaded = st.file_uploader(f"{label}{badge}", type=["xlsx", "xls", "csv"], key=f"upload_{key}")
             if uploaded is not None:
                 if key not in st.session_state.files or st.session_state.files[key]["filename"] != uploaded.name:
                     try:
-                        reader = READERS[key]
-                        records = reader(uploaded)
+                        records = READERS[key](uploaded)
                         st.session_state.files[key] = {"filename": uploaded.name, "records": records}
                         add_log(f"Uploaded {key}: {uploaded.name} ({len(records)} records)")
                         st.success(f"{len(records)} records loaded")
                     except Exception as e:
-                        st.error(f"Error reading file: {e}")
+                        st.error(f"Error: {e}")
                 else:
                     st.success(f"{len(st.session_state.files[key]['records'])} records loaded")
             if key in st.session_state.files:
                 st.caption(f"File: {st.session_state.files[key]['filename']}")
 
     st.divider()
-
     st.subheader("Step 3 — Run")
     col1, col2, col3 = st.columns(3)
-
     with col1:
         if st.button("Run Harmonization", type="primary", use_container_width=True):
             if not st.session_state.masters:
-                st.error("Select at least one master file first.")
+                st.error("Select at least one master.")
             elif not all(m in st.session_state.files for m in st.session_state.masters):
-                missing = [m for m in st.session_state.masters if m not in st.session_state.files]
-                st.error(f"Master file(s) not uploaded: {', '.join(missing)}")
+                st.error("Upload all master files first.")
             else:
                 st.session_state.classes = run_harmonization()
-                st.success(f"Harmonized {len(st.session_state.classes)} classes!")
                 st.rerun()
-
     with col2:
         if st.button("Load Demo Data", use_container_width=True):
             load_demo_data()
@@ -799,13 +666,10 @@ with tab_upload:
                 st.session_state.masters = ["aramco"]
             st.session_state.classes = run_harmonization()
             st.rerun()
-
     with col3:
         if st.session_state.classes:
-            xlsx_bytes = build_excel_bytes(st.session_state.classes)
             st.download_button(
-                "Export Excel",
-                data=xlsx_bytes,
+                "Export Excel", data=build_excel_bytes(st.session_state.classes),
                 file_name="harmonization_export.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
@@ -813,12 +677,11 @@ with tab_upload:
 
     if st.session_state.files:
         st.divider()
-        st.caption("**Uploaded files:**")
         status_cols = st.columns(len(st.session_state.files))
         for i, (k, v) in enumerate(st.session_state.files.items()):
             with status_cols[i]:
-                is_m = "MASTER " if k in st.session_state.masters else ""
-                st.metric(f"{is_m}{FILE_TYPES[k]}", f"{len(v['records'])} records")
+                tag = "MASTER " if k in st.session_state.masters else ""
+                st.metric(f"{tag}{FILE_TYPES[k]}", f"{len(v['records'])} records")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -826,124 +689,87 @@ with tab_upload:
 # ══════════════════════════════════════════════════════════════════════
 with tab_dashboard:
     classes = st.session_state.classes
-
     if not classes:
-        st.info("No harmonization results yet. Go to **Upload & Configure** to get started.")
+        st.info("No results yet. Go to **Upload & Configure**.")
     else:
         masters = st.session_state.masters
         total = len(classes)
-        non_master_sources = set()
-        gap_count = 0
-        source_match_counts = {}
-        fully_matched = 0
-        for c in classes:
-            non_master_sources.update(c["matches"].keys())
-            non_master_sources.update(c["gaps"])
-            for src in c["matches"]:
-                source_match_counts[src] = source_match_counts.get(src, 0) + 1
-            gap_count += len(c["gaps"])
-            if not c["gaps"] and (len(masters) == 1 or c.get("cross_score") is not None):
-                fully_matched += 1
 
-        # Metrics row
-        mc = st.columns(3 + len(source_match_counts))
+        # Collect non-master sources
+        non_master_keys = set()
+        for c in classes:
+            non_master_keys.update(c["matches"].keys())
+            non_master_keys.update(c["gaps"])
+        non_master_keys = sorted(non_master_keys)
+
+        # Per-source stats
+        source_stats = {}
+        for src in non_master_keys:
+            matched = sum(1 for c in classes if src in c["matches"])
+            gaps = total - matched
+            source_stats[src] = {"matched": matched, "gaps": gaps}
+
+        no_gaps_total = sum(1 for c in classes if not c["gaps"])
+
+        # Metrics
+        mc = st.columns(2 + len(non_master_keys))
         with mc[0]:
             st.metric("Total Classes", total)
         with mc[1]:
-            st.metric("Fully Matched", f"{fully_matched}/{total}")
-        with mc[2]:
-            st.metric("Total Gaps", gap_count)
-        for i, (src, cnt) in enumerate(source_match_counts.items()):
-            with mc[3 + i]:
-                pct = int(round(cnt / total * 100))
-                st.metric(f"{FILE_TYPES.get(src, src)}", f"{pct}% matched")
+            st.metric("No Gaps", f"{no_gaps_total}/{total}")
+        for i, src in enumerate(non_master_keys):
+            with mc[2 + i]:
+                s = source_stats[src]
+                pct = int(round(s["matched"] / total * 100))
+                st.metric(FILE_TYPES.get(src, src), f"{pct}% match ({s['gaps']} gaps)")
 
-        st.caption(
-            f"**Masters:** {', '.join(FILE_TYPES.get(m, m) for m in masters)} "
-            f" |  **Threshold:** {st.session_state.match_threshold}%"
-        )
+        master_label = " + ".join(FILE_TYPES.get(m, m) for m in masters)
+        compared_label = ", ".join(FILE_TYPES.get(s, s) for s in non_master_keys)
+        st.caption(f"**Master:** {master_label}  |  **Compared against:** {compared_label}  |  **Threshold:** {st.session_state.match_threshold}%")
         st.divider()
 
-        # Expandable results
-        st.subheader("Harmonized Equipment Classes")
-
         # Filter
-        filter_opt = st.radio(
-            "Show", ["All", "Fully Matched only", "Has Gaps only"], horizontal=True,
-        )
+        filter_opt = st.radio("Show", ["All", "No Gaps only", "Has Gaps only"], horizontal=True)
 
         for c in classes:
             has_gaps = bool(c["gaps"])
-            missing_master = len(masters) == 2 and c.get("cross_score") is None and len(c["master_entries"]) < 2
-
-            if filter_opt == "Fully Matched only" and (has_gaps or missing_master):
+            if filter_opt == "No Gaps only" and has_gaps:
                 continue
-            if filter_opt == "Has Gaps only" and not has_gaps and not missing_master:
+            if filter_opt == "Has Gaps only" and not has_gaps:
                 continue
 
-            # Status badge
-            if has_gaps or missing_master:
-                badge = ":red[HAS GAPS]"
-            else:
-                badge = ":green[FULLY MATCHED]"
+            # Header
+            gap_label = ":red[GAP IN: " + ", ".join(FILE_TYPES.get(g, g) for g in c["gaps"]) + "]" if has_gaps else ":green[No Gaps]"
 
-            header_parts = []
-            for m in masters:
-                me = c["master_entries"].get(m)
-                if me:
-                    header_parts.append(f"{FILE_TYPES[m]}: {me['name']}")
-                else:
-                    header_parts.append(f"{FILE_TYPES[m]}: MISSING")
-            header = " | ".join(header_parts) if header_parts else c["canonical_name"]
-
-            with st.expander(f"**{c['index']}. {header}** — {badge}"):
-                # Master info
-                st.markdown("**Masters:**")
+            with st.expander(f"**{c['index']}. {c['canonical_name']}** — {gap_label}"):
+                # Master reference
+                st.markdown("**Master Reference:**")
                 for m in masters:
                     me = c["master_entries"].get(m)
                     if me:
-                        st.markdown(f"- **{FILE_TYPES[m]}**: {me['name']} (ID: `{me['id']}`)")
+                        st.markdown(f"- {FILE_TYPES[m]}: **{me['name']}** (`{me['id']}`)")
                     else:
-                        st.markdown(f"- :red[**{FILE_TYPES[m]}**: GAP - NOT IN THIS MASTER]")
+                        st.markdown(f"- {FILE_TYPES[m]}: :red[not in this master]")
 
-                if len(masters) == 2:
-                    cs = c.get("cross_score")
-                    if cs is not None:
-                        status, _ = classify_match(cs)
-                        st.markdown(f"- Masters cross-match: **{cs}%** ({status})")
+                if len(masters) == 2 and c.get("cross_score") is not None:
+                    st.caption(f"Masters cross-match: {c['cross_score']}%")
+
+                # Per-source comparison
+                st.markdown("**Comparison Results:**")
+                for src in non_master_keys:
+                    match = c["matches"].get(src)
+                    label = FILE_TYPES.get(src, src)
+                    if match:
+                        status, _ = classify_match(match["score"])
+                        color = "green" if match["score"] >= 90 else "orange" if match["score"] >= 75 else "red"
+                        st.markdown(f"- :{color}[**{label}**]: {match['name']} (`{match['id']}`) — {match['score']}% {status}")
                     else:
-                        st.markdown("- :red[Masters cross-match: **GAP** — only in one master]")
+                        st.markdown(f"- :red[**{label}**: GAP — not found]")
 
-                # Other matches
-                if c["matches"]:
-                    st.markdown("**Matched sources:**")
-                    for src, match in c["matches"].items():
-                        score = match["score"]
-                        status, conf = classify_match(score)
-                        if score >= 90:
-                            color = "green"
-                        elif score >= 75:
-                            color = "orange"
-                        else:
-                            color = "red"
-                        st.markdown(
-                            f"- :{color}[**{FILE_TYPES.get(src, src)}**]: "
-                            f"{match['name']} (ID: `{match['id']}`) — **{score}%** ({status})"
-                        )
-
-                if c["gaps"]:
-                    st.markdown("**:red[GAPS — Missing from these sources:]**")
-                    for g in c["gaps"]:
-                        st.markdown(
-                            f"- :red[**{FILE_TYPES.get(g, g)}**] — No match above "
-                            f"{st.session_state.match_threshold}% threshold"
-                        )
-
-        # Table view
+        # Table
         st.divider()
         st.subheader("Table View")
-        export_df = build_export_df(classes)
-        st.dataframe(export_df, use_container_width=True, hide_index=True)
+        st.dataframe(build_export_df(classes), use_container_width=True, hide_index=True)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -952,46 +778,29 @@ with tab_dashboard:
 with tab_gaps:
     classes = st.session_state.classes
     if not classes:
-        st.info("Run harmonization first to see gap analysis.")
+        st.info("Run harmonization first.")
     else:
         masters = st.session_state.masters
-
-        # Collect all gaps
         all_gaps = []
         for c in classes:
-            # Gap in non-master sources
             for g in c["gaps"]:
-                present_in = [FILE_TYPES.get(m, m) for m in masters if m in c["master_entries"]]
-                present_in += [FILE_TYPES.get(s, s) for s in c["matches"]]
+                found_in = [FILE_TYPES.get(m, m) for m in masters if m in c["master_entries"]]
+                found_in += [FILE_TYPES.get(s, s) for s in c["matches"]]
                 all_gaps.append({
                     "Equipment Class": c["canonical_name"],
-                    "Present In": ", ".join(present_in),
-                    "MISSING From": FILE_TYPES.get(g, g),
-                    "Gap Type": "Not in source",
+                    "Found In": ", ".join(found_in),
+                    "Gap In": FILE_TYPES.get(g, g),
+                    "Action": f"Add to {FILE_TYPES.get(g, g)} or confirm exclusion",
                 })
-            # Gap in dual-master cross-match
-            if len(masters) == 2:
-                for m in masters:
-                    if m not in c["master_entries"]:
-                        present_in = [FILE_TYPES.get(mm, mm) for mm in masters if mm in c["master_entries"]]
-                        all_gaps.append({
-                            "Equipment Class": c["canonical_name"],
-                            "Present In": ", ".join(present_in),
-                            "MISSING From": FILE_TYPES.get(m, m),
-                            "Gap Type": "Not in master",
-                        })
 
         st.subheader(f"Gap Analysis — {len(all_gaps)} gaps found")
 
         if not all_gaps:
-            st.success("No gaps! All equipment classes are matched across all sources.")
+            st.success("No gaps! All sources are fully matched.")
         else:
-            # Summary by source
-            st.markdown("**Gaps per source:**")
             gap_by_source = {}
             for g in all_gaps:
-                src = g["MISSING From"]
-                gap_by_source[src] = gap_by_source.get(src, 0) + 1
+                gap_by_source[g["Gap In"]] = gap_by_source.get(g["Gap In"], 0) + 1
 
             gap_cols = st.columns(len(gap_by_source))
             for i, (src, cnt) in enumerate(sorted(gap_by_source.items(), key=lambda x: -x[1])):
@@ -999,27 +808,14 @@ with tab_gaps:
                     st.metric(src, f"{cnt} gaps")
 
             st.divider()
+            source_filter = st.selectbox("Filter by source", ["All"] + sorted(gap_by_source.keys()))
+            filtered = all_gaps if source_filter == "All" else [g for g in all_gaps if g["Gap In"] == source_filter]
+            st.dataframe(pd.DataFrame(filtered), use_container_width=True, hide_index=True)
 
-            # Filter by source
-            source_filter = st.selectbox(
-                "Filter by missing source",
-                ["All"] + sorted(gap_by_source.keys()),
-            )
-
-            filtered = all_gaps if source_filter == "All" else [g for g in all_gaps if g["MISSING From"] == source_filter]
-
-            gap_df = pd.DataFrame(filtered)
-            st.dataframe(gap_df, use_container_width=True, hide_index=True)
-
-            # Actionable list
             st.divider()
             st.subheader("Action Items")
             for i, g in enumerate(filtered):
-                st.markdown(
-                    f"{i+1}. **{g['Equipment Class']}** — "
-                    f"Add to :red[**{g['MISSING From']}**] "
-                    f"(currently in: {g['Present In']})"
-                )
+                st.markdown(f"{i+1}. **{g['Equipment Class']}** — add to :red[**{g['Gap In']}**] (found in: {g['Found In']})")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1028,84 +824,61 @@ with tab_gaps:
 with tab_visual:
     classes = st.session_state.classes
     if not classes:
-        st.info("Run harmonization first to see the connection map.")
+        st.info("Run harmonization first.")
     else:
         st.subheader("Connection Map")
-
-        view_mode = st.radio(
-            "View",
-            ["Per-class detail", "Overview (first 20 rows)"],
-            horizontal=True,
-        )
-
+        view_mode = st.radio("View", ["Per-class detail", "Overview (first 20)"], horizontal=True)
         if view_mode == "Per-class detail":
             options = [f"{c['index']}. {c['canonical_name']}" for c in classes]
             selected = st.selectbox("Select equipment class", options)
             if selected:
                 idx = int(selected.split(".")[0]) - 1
-                entry = classes[idx]
-                dot = build_connection_graph(entry)
-                st.graphviz_chart(dot, use_container_width=True)
-                st.caption("Solid lines = matched. Dashed red = GAP (no match). Numbers = match score %.")
+                st.graphviz_chart(build_connection_graph(classes[idx]), use_container_width=True)
+                st.caption("Solid = matched. Dashed red = GAP.")
         else:
-            dot = build_overview_graph(classes, max_rows=20)
-            st.graphviz_chart(dot, use_container_width=True)
+            st.graphviz_chart(build_overview_graph(classes, 20), use_container_width=True)
             if len(classes) > 20:
-                st.caption(f"Showing first 20 of {len(classes)} classes.")
+                st.caption(f"First 20 of {len(classes)}.")
 
 
 # ══════════════════════════════════════════════════════════════════════
-# TAB: Search — best match only
+# TAB: Search
 # ══════════════════════════════════════════════════════════════════════
 with tab_search:
     st.subheader("Search Equipment Classes")
-    query = st.text_input("Equipment name", placeholder="e.g. centrifugal pump, heat exchanger...")
+    query = st.text_input("Equipment name", placeholder="e.g. centrifugal pump...")
 
     if query and st.session_state.classes:
         names = [c["canonical_name"] for c in st.session_state.classes]
         result = process.extractOne(query, names, scorer=fuzz.token_sort_ratio)
-
         if result:
             name, score, idx = result
             score = int(round(score))
             c = st.session_state.classes[idx]
-            status, conf = classify_match(score)
+            status, _ = classify_match(score)
+            color = "green" if score >= 90 else "orange" if score >= 75 else "red"
 
-            if score >= 90:
-                color = "green"
-            elif score >= 75:
-                color = "orange"
-            else:
-                color = "red"
+            st.markdown(f"### :{color}[**{name}** — {score}% ({status})]")
 
-            st.markdown(f"### :{color}[Best match: **{name}** — {score}% ({status})]")
-
-            masters = st.session_state.masters
             col_l, col_r = st.columns(2)
             with col_l:
-                st.markdown("**Master entries:**")
-                for m in masters:
+                st.markdown("**Master Reference:**")
+                for m in st.session_state.masters:
                     me = c["master_entries"].get(m)
                     if me:
-                        st.markdown(f"- **{FILE_TYPES[m]}**: {me['name']} (`{me['id']}`)")
-                    else:
-                        st.markdown(f"- :red[**{FILE_TYPES[m]}**: GAP]")
-
+                        st.markdown(f"- {FILE_TYPES[m]}: {me['name']} (`{me['id']}`)")
             with col_r:
                 if c["matches"]:
-                    st.markdown("**Other matches:**")
+                    st.markdown("**Matches:**")
                     for src, match in c["matches"].items():
-                        st.markdown(f"- **{FILE_TYPES.get(src, src)}**: {match['name']} — {match['score']}%")
+                        st.markdown(f"- {FILE_TYPES.get(src, src)}: {match['name']} — {match['score']}%")
                 if c["gaps"]:
-                    st.markdown("**:red[Gaps:]** " + ", ".join(FILE_TYPES.get(g, g) for g in c["gaps"]))
+                    st.markdown("**:red[Gap In:]** " + ", ".join(FILE_TYPES.get(g, g) for g in c["gaps"]))
 
             st.divider()
-            dot = build_connection_graph(c)
-            st.graphviz_chart(dot, use_container_width=True)
-        else:
-            st.warning("No match found.")
+            st.graphviz_chart(build_connection_graph(c), use_container_width=True)
     elif query:
-        st.warning("Run harmonization first to search.")
+        st.warning("Run harmonization first.")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1113,9 +886,7 @@ with tab_search:
 # ══════════════════════════════════════════════════════════════════════
 with tab_batch:
     st.subheader("Batch Process")
-    st.caption("Enter one equipment name per line, or upload a CSV with a `name` column.")
-
-    batch_input = st.text_area("Equipment names", height=150, placeholder="Centrifugal Pump\nHeat Exchanger\nPressure Vessel")
+    batch_input = st.text_area("Equipment names (one per line)", height=150)
     batch_file = st.file_uploader("Or upload CSV", type=["csv"], key="batch_csv")
 
     if st.button("Process Batch", type="primary"):
@@ -1125,7 +896,7 @@ with tab_batch:
             col = "name" if "name" in bdf.columns else bdf.columns[0]
             items = bdf[col].dropna().astype(str).tolist()
         elif batch_input.strip():
-            items = [line.strip() for line in batch_input.strip().split("\n") if line.strip()]
+            items = [l.strip() for l in batch_input.strip().split("\n") if l.strip()]
 
         if not items:
             st.warning("Enter at least one item.")
@@ -1138,24 +909,15 @@ with tab_batch:
                 match = process.extractOne(item, names, scorer=fuzz.token_sort_ratio)
                 if match:
                     name, score, idx = match
-                    score = int(round(score))
                     c = st.session_state.classes[idx]
-                    status, conf = classify_match(score)
-                    results.append({
-                        "Input": item,
-                        "Best Match": name,
-                        "Score %": score,
-                        "Status": status,
-                        "Gaps": ", ".join(FILE_TYPES.get(g, g) for g in c["gaps"]) or "None",
-                    })
+                    status, _ = classify_match(int(round(score)))
+                    gaps = ", ".join(FILE_TYPES.get(g, g) for g in c["gaps"]) or "No Gaps"
+                    results.append({"Input": item, "Best Match": name, "Score%": int(round(score)), "Status": status, "Gap In": gaps})
                 else:
-                    results.append({"Input": item, "Best Match": "—", "Score %": 0, "Status": "No Match", "Gaps": "—"})
-
+                    results.append({"Input": item, "Best Match": "—", "Score%": 0, "Status": "No Match", "Gap In": "—"})
             result_df = pd.DataFrame(results)
             st.dataframe(result_df, use_container_width=True, hide_index=True)
-
-            csv_out = result_df.to_csv(index=False).encode()
-            st.download_button("Download batch results", data=csv_out, file_name="batch_results.csv", mime="text/csv")
+            st.download_button("Download", data=result_df.to_csv(index=False).encode(), file_name="batch_results.csv", mime="text/csv")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -1164,11 +926,9 @@ with tab_batch:
 with tab_logs:
     st.subheader("System Logs")
     if st.session_state.logs:
-        log_text = "\n".join(reversed(st.session_state.logs))
-        st.code(log_text, language="log")
+        st.code("\n".join(reversed(st.session_state.logs)), language="log")
     else:
         st.info("No logs yet.")
 
-# ── Footer ────────────────────────────────────────────────────────────
 st.divider()
 st.caption("Built by KBR AMCDE Team — RDL Data Harmonizer v2.0")
