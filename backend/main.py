@@ -175,23 +175,65 @@ def _has_word_overlap(name_a, name_b):
     return False
 
 
+def _expand_compound_names(candidates):
+    """Expand candidates with '/' separated compound names.
+    'Junction Box / Splice Case' → also try 'Junction Box' and 'Splice Case'
+    separately, so fuzzy matching finds the right sub-part.
+    Returns (expanded_names, index_map) where index_map[i] → original candidate index.
+    """
+    expanded_names = []
+    index_map = []
+    for i, c in enumerate(candidates):
+        # Always include the full name
+        expanded_names.append(c["name"])
+        index_map.append(i)
+        # If it contains '/', also add each part as a matchable alias
+        if "/" in c["name"]:
+            parts = [p.strip() for p in c["name"].split("/") if p.strip()]
+            for part in parts:
+                expanded_names.append(part)
+                index_map.append(i)
+    return expanded_names, index_map
+
+
 def fuzzy_match(name, candidates, threshold):
     """Return the single best match above threshold, or None.
+    Handles compound names with '/' (e.g. 'Junction Box / Splice Case').
     Also validates word overlap to prevent false positives.
     """
     if not candidates:
         return None
-    names = [c["name"] for c in candidates]
-    result = process.extractOne(
-        name, names, scorer=fuzz.token_sort_ratio, score_cutoff=threshold,
-    )
-    if result is None:
+
+    # Expand compound '/' names so sub-parts can be matched individually
+    expanded_names, index_map = _expand_compound_names(candidates)
+
+    # Try the full query name first, then try each '/' sub-part if present
+    query_variants = [name]
+    if "/" in name:
+        query_variants += [p.strip() for p in name.split("/") if p.strip()]
+
+    best_result = None
+    best_score = 0
+
+    for q in query_variants:
+        result = process.extractOne(
+            q, expanded_names, scorer=fuzz.token_sort_ratio, score_cutoff=threshold,
+        )
+        if result and result[1] > best_score:
+            best_result = result
+            best_score = result[1]
+
+    if best_result is None:
         return None
-    matched_name, score, idx = result
+
+    matched_name, score, exp_idx = best_result
+    orig_idx = index_map[exp_idx]
+
     # Word overlap check — reject if names share no meaningful words
-    if not _has_word_overlap(name, matched_name):
+    if not _has_word_overlap(name, matched_name) and not _has_word_overlap(name, candidates[orig_idx]["name"]):
         return None
-    return {**candidates[idx], "score": int(round(score))}
+
+    return {**candidates[orig_idx], "score": int(round(score))}
 
 
 def classify_match(score):
