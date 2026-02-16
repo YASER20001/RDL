@@ -116,9 +116,12 @@ def read_ltc(file) -> list[dict]:
         df = pd.read_excel(file, sheet_name=0)
     records = []
     for _, row in df.iterrows():
+        raw_name = str(row.get("Name", row.get("name", "")))
+        # Strip [OBSOLETE] or similar bracketed prefixes so fuzzy matching works
+        clean_name = re.sub(r'\[.*?\]\s*', '', raw_name).strip()
         records.append({
             "id": str(row.get("Id", row.get("id", ""))),
-            "name": str(row.get("Name", row.get("name", ""))),
+            "name": clean_name if clean_name else raw_name,
             "source": "ltc",
         })
     return [r for r in records if r["name"].strip()]
