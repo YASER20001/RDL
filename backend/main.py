@@ -104,9 +104,15 @@ def read_kbr(file) -> list[dict]:
 
 
 def read_ltc(file) -> list[dict]:
-    try:
-        df = pd.read_excel(file, sheet_name="ISM Functional Classes")
-    except Exception:
+    # Prefer "ISM Physical Classes" (PCL IDs) over "ISM Functional Classes" (FCL IDs)
+    df = None
+    for sheet in ("ISM Physical Classes", "ISM Functional Classes"):
+        try:
+            df = pd.read_excel(file, sheet_name=sheet)
+            break
+        except Exception:
+            continue
+    if df is None:
         df = pd.read_excel(file, sheet_name=0)
     records = []
     for _, row in df.iterrows():
