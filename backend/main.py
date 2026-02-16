@@ -184,6 +184,12 @@ def read_aramco_attributes(file) -> pd.DataFrame:
         elif cl.lower() == "action":
             col_map[c] = "Action"
     df = df.rename(columns=col_map)
+    # Back-fill Name from Attribute_Desc when Name is empty/NaN
+    if "Attribute_Desc" in df.columns and "Name" in df.columns:
+        mask = df["Name"].isna() | (df["Name"].astype(str).str.strip() == "") | (df["Name"].astype(str).str.lower() == "nan")
+        df.loc[mask, "Name"] = df.loc[mask, "Attribute_Desc"]
+    elif "Attribute_Desc" in df.columns and "Name" not in df.columns:
+        df["Name"] = df["Attribute_Desc"]
     df["_source"] = "aramco"
     return df
 
@@ -1016,7 +1022,8 @@ with tab_attrs:
                         if subset.empty:
                             st.warning("No Aramco attributes found for this class.")
                         else:
-                            display_cols = [c for c in ["Name", "Description", "Presence", "Size",
+                            display_cols = [c for c in ["Attribute_Id", "Name", "Attribute_Desc", "Class_Desc",
+                                                         "Description", "Presence", "Size",
                                                          "Discipline", "UomClassId", "UomRequire",
                                                          "ValidationRule", "Group_Id"] if c in subset.columns]
                             st.dataframe(subset[display_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
@@ -1088,7 +1095,7 @@ with tab_attrs:
                     with col_left:
                         st.markdown("**Aramco Attributes**")
                         if not aramco_sub.empty:
-                            display_cols = [c for c in ["Name", "Presence", "Size", "Description"] if c in aramco_sub.columns]
+                            display_cols = [c for c in ["Name", "Attribute_Desc", "Presence", "Size", "Description"] if c in aramco_sub.columns]
                             st.dataframe(aramco_sub[display_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
                         else:
                             st.info("No Aramco attributes for this class.")
