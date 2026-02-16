@@ -143,8 +143,42 @@ READERS = {
 # ──────────────────────────────────────────────────────────────────────
 # Harmonization engine
 # ──────────────────────────────────────────────────────────────────────
+def _tokenize(text):
+    """Split text into lowercase word tokens, dropping short noise words."""
+    import re
+    words = set(re.findall(r'[a-z]{2,}', text.lower()))
+    # Remove very common filler words that cause false positives
+    noise = {"the", "and", "for", "with", "from", "that", "this", "its"}
+    return words - noise
+
+
+def _has_word_overlap(name_a, name_b):
+    """Check if two names share at least one meaningful word.
+    Prevents false matches like 'all' ↔ 'wall', 'box' ↔ 'block'.
+    For very short names (1 word), require exact word match.
+    """
+    tokens_a = _tokenize(name_a)
+    tokens_b = _tokenize(name_b)
+    if not tokens_a or not tokens_b:
+        # If either is empty after tokenization, allow fuzzy to decide
+        return True
+    overlap = tokens_a & tokens_b
+    if overlap:
+        return True
+    # Also check if any token in A is a substring of a token in B or vice versa
+    # (handles "heat exchanger" vs "exchanger" or "pump" vs "centrifugal pump")
+    for a in tokens_a:
+        for b in tokens_b:
+            if len(a) >= 3 and len(b) >= 3:
+                if a in b or b in a:
+                    return True
+    return False
+
+
 def fuzzy_match(name, candidates, threshold):
-    """Return the single best match above threshold, or None."""
+    """Return the single best match above threshold, or None.
+    Also validates word overlap to prevent false positives.
+    """
     if not candidates:
         return None
     names = [c["name"] for c in candidates]
@@ -154,6 +188,9 @@ def fuzzy_match(name, candidates, threshold):
     if result is None:
         return None
     matched_name, score, idx = result
+    # Word overlap check — reject if names share no meaningful words
+    if not _has_word_overlap(name, matched_name):
+        return None
     return {**candidates[idx], "score": int(round(score))}
 
 
@@ -339,11 +376,18 @@ def build_export_df(classes):
         matched_count = len(c["matches"])
         gap_count = len(c["gaps"])
 
-        if gap_count == 0 and (len(masters) == 1 or c.get("cross_score") is not None):
+        has_master_cross = len(masters) == 2 and c.get("cross_score") is not None
+        has_both_masters = len(c["master_entries"]) == len(masters)
+        missing_master = len(masters) == 2 and not has_both_masters
+
+        if gap_count == 0 and not missing_master:
             overall_status = "FULLY MATCHED"
-        elif gap_count == total_other:
+        elif gap_count == total_other and missing_master and matched_count == 0:
             overall_status = "NO MATCHES"
-        elif gap_count > 0:
+        elif gap_count == total_other and not missing_master:
+            # Masters matched each other but no non-master source matched
+            overall_status = "MASTERS ONLY - NO OTHER MATCHES"
+        elif gap_count > 0 or missing_master:
             overall_status = "PARTIAL - HAS GAPS"
         else:
             overall_status = "MATCHED"
