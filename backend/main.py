@@ -4,6 +4,7 @@ Run:  streamlit run main.py
 """
 
 import uuid
+import io
 import pandas as pd
 import streamlit as st
 from rapidfuzz import fuzz, process
@@ -25,6 +26,7 @@ DEFAULTS = {
     "masters": [],
     "classes": [],
     "logs": [],
+    "match_threshold": 75,
 }
 for k, v in DEFAULTS.items():
     if k not in st.session_state:
@@ -141,52 +143,73 @@ READERS = {
 # ──────────────────────────────────────────────────────────────────────
 # Harmonization engine
 # ──────────────────────────────────────────────────────────────────────
-def fuzzy_match(name, candidates, threshold=60):
+def fuzzy_match(name, candidates, threshold):
+    """Return the single best match above threshold, or None."""
     if not candidates:
         return None
     names = [c["name"] for c in candidates]
-    result = process.extractOne(name, names, scorer=fuzz.token_sort_ratio, score_cutoff=threshold)
+    result = process.extractOne(
+        name, names, scorer=fuzz.token_sort_ratio, score_cutoff=threshold,
+    )
     if result is None:
         return None
     matched_name, score, idx = result
     return {**candidates[idx], "score": int(round(score))}
 
 
+def classify_match(score):
+    """Return (status, confidence) for a given score."""
+    if score >= 95:
+        return "Exact Match", "High"
+    elif score >= 85:
+        return "Strong Match", "High"
+    elif score >= 75:
+        return "Partial Match", "Medium"
+    else:
+        return "Weak Match", "Low"
+
+
 def run_harmonization():
     """Harmonize: merge masters into unified rows, match others against them.
 
-    When 2 masters are selected (e.g. KBR + CFIHOS), we:
-      1. Start from master-1 records.
-      2. For each master-1 record, find its best match in master-2.
-      3. Any master-2 records that were NOT matched get appended.
-      4. Each row now has BOTH master IDs/names side-by-side.
-      5. Non-master sources are matched against the merged name.
+    Dual master: Master-1 rows are matched 1:1 against Master-2. Unmatched
+    Master-2 rows are appended. Each row has both master IDs/names merged.
+    Non-master sources are then matched against the canonical name.
     """
     masters = st.session_state.masters
     files = st.session_state.files
+    threshold = st.session_state.match_threshold
 
     if len(masters) == 1:
-        # Single master — straightforward
         master_records = files[masters[0]]["records"]
         merged = []
+        seen = set()
         for r in master_records:
+            key = r["name"].strip().lower()
+            if key in seen:
+                continue
+            seen.add(key)
             merged.append({
                 "master_entries": {masters[0]: r},
                 "canonical_name": r["name"],
             })
     else:
-        # Dual master — merge into unified rows
         m1, m2 = masters[0], masters[1]
         m1_records = files[m1]["records"]
-        m2_records = list(files[m2]["records"])  # copy so we can track used
+        m2_records = list(files[m2]["records"])
         m2_used = set()
 
+        # Deduplicate master-1
+        seen = set()
         merged = []
         for r1 in m1_records:
-            match = fuzzy_match(r1["name"], m2_records)
+            key = r1["name"].strip().lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            match = fuzzy_match(r1["name"], m2_records, threshold)
             entry = {"master_entries": {m1: r1}, "canonical_name": r1["name"]}
             if match:
-                # Find the index in m2_records to mark as used
                 for i, r2 in enumerate(m2_records):
                     if r2["id"] == match["id"] and r2["name"] == match["name"]:
                         m2_used.add(i)
@@ -196,15 +219,18 @@ def run_harmonization():
                 entry["cross_score"] = match["score"]
             merged.append(entry)
 
-        # Append unmatched master-2 records
+        # Append unmatched + deduplicated master-2 records
         for i, r2 in enumerate(m2_records):
             if i not in m2_used:
-                merged.append({
-                    "master_entries": {m2: r2},
-                    "canonical_name": r2["name"],
-                })
+                key = r2["name"].strip().lower()
+                if key not in seen:
+                    seen.add(key)
+                    merged.append({
+                        "master_entries": {m2: r2},
+                        "canonical_name": r2["name"],
+                    })
 
-    add_log(f"Master set from {masters}: {len(merged)} unified rows")
+    add_log(f"Master set from {masters}: {len(merged)} unique rows (threshold={threshold}%)")
 
     # Non-master sources
     other = {k: v["records"] for k, v in files.items() if k not in masters}
@@ -221,7 +247,7 @@ def run_harmonization():
             "gaps": [],
         }
         for src, candidates in other.items():
-            match = fuzzy_match(row["canonical_name"], candidates)
+            match = fuzzy_match(row["canonical_name"], candidates, threshold)
             if match:
                 entry["matches"][src] = match
             else:
@@ -286,10 +312,20 @@ def load_demo_data():
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Export helper — clean merged table
+# Export helper — clean organized Excel
 # ──────────────────────────────────────────────────────────────────────
 def build_export_df(classes):
+    """Build a clean, well-organized DataFrame for export.
+
+    Layout for dual-master (e.g. KBR + CFIHOS):
+        # | Status | Confidence | KBR ID | KBR Name | CFIHOS ID | CFIHOS Name |
+        Master Match% | ARAMCO ID | ARAMCO Name | ARAMCO Match% | ARAMCO Status | ...
+        | Gap Sources | Gap Count
+
+    Gaps are clearly marked as "GAP - NO MATCH" in the Name cells.
+    """
     masters = st.session_state.masters
+    # Collect ALL non-master sources (even if only in gaps)
     non_master_sources = set()
     for c in classes:
         non_master_sources.update(c["matches"].keys())
@@ -298,39 +334,157 @@ def build_export_df(classes):
 
     rows = []
     for c in classes:
-        row = {"#": c["index"]}
+        # --- Overall status ---
+        total_other = len(non_master_sources)
+        matched_count = len(c["matches"])
+        gap_count = len(c["gaps"])
 
-        # Master columns — merged side by side
+        if gap_count == 0 and (len(masters) == 1 or c.get("cross_score") is not None):
+            overall_status = "FULLY MATCHED"
+        elif gap_count == total_other:
+            overall_status = "NO MATCHES"
+        elif gap_count > 0:
+            overall_status = "PARTIAL - HAS GAPS"
+        else:
+            overall_status = "MATCHED"
+
+        # Overall confidence from worst match
+        all_scores = [m["score"] for m in c["matches"].values()]
+        if c.get("cross_score"):
+            all_scores.append(c["cross_score"])
+        if all_scores:
+            min_score = min(all_scores)
+            _, overall_conf = classify_match(min_score)
+        else:
+            overall_conf = "None"
+
+        row = {
+            "#": c["index"],
+            "Overall Status": overall_status,
+            "Confidence": overall_conf,
+        }
+
+        # --- Master columns ---
         for m in masters:
-            label = FILE_TYPES.get(m, m).upper()
+            label = FILE_TYPES.get(m, m)
             me = c["master_entries"].get(m)
             row[f"{label} ID"] = me["id"] if me else ""
-            row[f"{label} Name"] = me["name"] if me else ""
+            row[f"{label} Name"] = me["name"] if me else "GAP - NOT IN THIS MASTER"
 
-        if len(masters) == 2 and c.get("cross_score") is not None:
-            row["Master Match %"] = c["cross_score"]
-        elif len(masters) == 2:
-            row["Master Match %"] = ""
+        if len(masters) == 2:
+            cs = c.get("cross_score")
+            if cs is not None:
+                status, conf = classify_match(cs)
+                row["Masters Match%"] = cs
+                row["Masters Status"] = status
+            else:
+                row["Masters Match%"] = ""
+                row["Masters Status"] = "GAP - NO CROSS-MATCH"
 
-        # Non-master match columns
+        # --- Non-master columns ---
         for s in non_master_sources:
-            label = FILE_TYPES.get(s, s).upper()
+            label = FILE_TYPES.get(s, s)
             m = c["matches"].get(s)
-            row[f"{label} ID"] = m["id"] if m else ""
-            row[f"{label} Name"] = m["name"] if m else ""
-            row[f"{label} Match %"] = m["score"] if m else ""
+            if m:
+                status, conf = classify_match(m["score"])
+                row[f"{label} ID"] = m["id"]
+                row[f"{label} Name"] = m["name"]
+                row[f"{label} Match%"] = m["score"]
+                row[f"{label} Status"] = status
+            else:
+                row[f"{label} ID"] = ""
+                row[f"{label} Name"] = "GAP - NO MATCH"
+                row[f"{label} Match%"] = 0
+                row[f"{label} Status"] = "GAP"
 
-        row["Gaps"] = ", ".join(FILE_TYPES.get(g, g) for g in c["gaps"])
+        # --- Gap summary ---
+        row["Gap Sources"] = " | ".join(FILE_TYPES.get(g, g) for g in c["gaps"]) if c["gaps"] else ""
+        row["Gap Count"] = gap_count
+
         rows.append(row)
 
     return pd.DataFrame(rows)
+
+
+def build_excel_bytes(classes):
+    """Build a styled Excel file with multiple sheets."""
+    buf = io.BytesIO()
+
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        # Sheet 1: Harmonization Results
+        df = build_export_df(classes)
+        df.to_excel(writer, sheet_name="Harmonization Results", index=False)
+
+        # Sheet 2: Gap Analysis
+        gap_rows = []
+        masters = st.session_state.masters
+        for c in classes:
+            for g in c["gaps"]:
+                gap_rows.append({
+                    "#": c["index"],
+                    "Equipment Class": c["canonical_name"],
+                    "Present In": ", ".join(
+                        FILE_TYPES.get(m, m) for m in masters if m in c["master_entries"]
+                    ) + (
+                        ", " + ", ".join(
+                            FILE_TYPES.get(s, s) for s in c["matches"]
+                        ) if c["matches"] else ""
+                    ),
+                    "MISSING From": FILE_TYPES.get(g, g),
+                    "Action Required": f"Add '{c['canonical_name']}' to {FILE_TYPES.get(g, g)} or confirm exclusion",
+                })
+        if gap_rows:
+            gap_df = pd.DataFrame(gap_rows)
+        else:
+            gap_df = pd.DataFrame(columns=["#", "Equipment Class", "Present In", "MISSING From", "Action Required"])
+        gap_df.to_excel(writer, sheet_name="Gap Analysis", index=False)
+
+        # Sheet 3: Summary Statistics
+        total = len(classes)
+        non_master_sources = set()
+        for c in classes:
+            non_master_sources.update(c["matches"].keys())
+            non_master_sources.update(c["gaps"])
+
+        summary_rows = [
+            {"Metric": "Total Equipment Classes", "Value": total},
+            {"Metric": "Masters", "Value": ", ".join(FILE_TYPES.get(m, m) for m in masters)},
+            {"Metric": "Match Threshold", "Value": f"{st.session_state.match_threshold}%"},
+            {"Metric": "Total Gap Entries", "Value": sum(len(c["gaps"]) for c in classes)},
+        ]
+        fully = sum(1 for c in classes if not c["gaps"] and (len(masters) == 1 or c.get("cross_score") is not None))
+        summary_rows.append({"Metric": "Fully Matched Classes", "Value": f"{fully} / {total}"})
+
+        for src in sorted(non_master_sources):
+            cnt = sum(1 for c in classes if src in c["matches"])
+            pct = int(round(cnt / total * 100)) if total else 0
+            summary_rows.append({
+                "Metric": f"{FILE_TYPES.get(src, src)} Match Rate",
+                "Value": f"{cnt}/{total} ({pct}%)",
+            })
+
+        summary_df = pd.DataFrame(summary_rows)
+        summary_df.to_excel(writer, sheet_name="Summary", index=False)
+
+        # Auto-fit column widths (approximate)
+        for sheet_name in writer.sheets:
+            ws = writer.sheets[sheet_name]
+            for col_cells in ws.columns:
+                max_len = 0
+                col_letter = col_cells[0].column_letter
+                for cell in col_cells:
+                    val = str(cell.value) if cell.value is not None else ""
+                    max_len = max(max_len, len(val))
+                ws.column_dimensions[col_letter].width = min(max_len + 3, 50)
+
+    buf.seek(0)
+    return buf.getvalue()
 
 
 # ──────────────────────────────────────────────────────────────────────
 # Graphviz connection diagram builder
 # ──────────────────────────────────────────────────────────────────────
 def build_connection_graph(entry):
-    """Build a Graphviz DOT string showing connections for one harmonized class."""
     masters = st.session_state.masters
     lines = []
     lines.append("digraph G {")
@@ -338,17 +492,16 @@ def build_connection_graph(entry):
     lines.append('  node [shape=box, style="filled,rounded", fontname="Arial", fontsize=11];')
     lines.append('  edge [fontname="Arial", fontsize=9];')
 
-    # Canonical center node
     canon = entry["canonical_name"].replace('"', '\\"')
     lines.append(f'  center [label="{canon}", fillcolor="#fef3c7", color="#d97706", penwidth=2];')
 
     node_id = 0
-    # Master nodes
     for m in masters:
         me = entry["master_entries"].get(m)
         if me:
             color = SOURCE_COLORS.get(m, "#6b7280")
-            label = f'{FILE_TYPES[m]}\\n{me["name"]}\\nID: {me["id"]}'
+            name_esc = me["name"].replace('"', '\\"')
+            label = f'{FILE_TYPES[m]}\\n{name_esc}\\nID: {me["id"]}'
             nid = f"m{node_id}"
             lines.append(f'  {nid} [label="{label}", fillcolor="{color}20", color="{color}", fontcolor="#1f2937"];')
             score_label = ""
@@ -358,20 +511,26 @@ def build_connection_graph(entry):
                 score_label = f' [label="master", color="{color}", fontcolor="{color}"]'
             lines.append(f'  {nid} -> center{score_label};')
             node_id += 1
+        else:
+            color = "#ef4444"
+            nid = f"m{node_id}"
+            label = f'{FILE_TYPES[m]}\\nNOT IN THIS MASTER'
+            lines.append(f'  {nid} [label="{label}", fillcolor="#fee2e2", color="{color}", fontcolor="{color}", style="filled,rounded,dashed"];')
+            lines.append(f'  {nid} -> center [style=dashed, color="{color}"];')
+            node_id += 1
 
-    # Non-master match nodes
     for src, match in entry["matches"].items():
         color = SOURCE_COLORS.get(src, "#6b7280")
-        label = f'{FILE_TYPES.get(src, src)}\\n{match["name"]}\\nID: {match["id"]}'
+        name_esc = match["name"].replace('"', '\\"')
+        label = f'{FILE_TYPES.get(src, src)}\\n{name_esc}\\nID: {match["id"]}'
         nid = f"n{node_id}"
         lines.append(f'  {nid} [label="{label}", fillcolor="{color}20", color="{color}", fontcolor="#1f2937"];')
         lines.append(f'  center -> {nid} [label="{match["score"]}%", color="{color}", fontcolor="{color}"];')
         node_id += 1
 
-    # Gap nodes
     for g in entry["gaps"]:
         color = "#ef4444"
-        label = f'{FILE_TYPES.get(g, g)}\\nNO MATCH'
+        label = f'{FILE_TYPES.get(g, g)}\\nGAP - NO MATCH'
         nid = f"g{node_id}"
         lines.append(f'  {nid} [label="{label}", fillcolor="#fee2e2", color="{color}", fontcolor="{color}", style="filled,rounded,dashed"];')
         lines.append(f'  center -> {nid} [style=dashed, color="{color}"];')
@@ -381,8 +540,7 @@ def build_connection_graph(entry):
     return "\n".join(lines)
 
 
-def build_overview_graph(classes, max_rows=30):
-    """Build a Graphviz DOT string showing all connections as a grid overview."""
+def build_overview_graph(classes, max_rows=20):
     masters = st.session_state.masters
     all_sources = set()
     for c in classes:
@@ -400,16 +558,15 @@ def build_overview_graph(classes, max_rows=30):
     display = classes[:max_rows]
 
     for idx, c in enumerate(display):
-        # Master nodes
         for m in masters:
             me = c["master_entries"].get(m)
             if me:
                 color = SOURCE_COLORS.get(m, "#6b7280")
                 nid = f"r{idx}_{m}"
-                label = f'{me["id"]}\\n{me["name"][:25]}'
+                name_esc = me["name"][:25].replace('"', '\\"')
+                label = f'{me["id"]}\\n{name_esc}'
                 lines.append(f'  {nid} [label="{label}", fillcolor="{color}15", color="{color}"];')
 
-        # If dual master, connect them
         if len(masters) == 2:
             m1, m2 = masters
             if m1 in c["master_entries"] and m2 in c["master_entries"]:
@@ -417,19 +574,18 @@ def build_overview_graph(classes, max_rows=30):
                 lbl = f'{score}%' if score else ""
                 lines.append(f'  r{idx}_{m1} -> r{idx}_{m2} [label="{lbl}", color="#6b7280", dir=both];')
 
-        # Non-master matches
         for src in all_sources:
             match = c["matches"].get(src)
             color = SOURCE_COLORS.get(src, "#6b7280")
             nid = f"r{idx}_{src}"
             if match:
-                label = f'{match["id"]}\\n{match["name"][:25]}'
+                name_esc = match["name"][:25].replace('"', '\\"')
+                label = f'{match["id"]}\\n{name_esc}'
                 lines.append(f'  {nid} [label="{label}", fillcolor="{color}15", color="{color}"];')
-                # Connect from first master
                 first_m = masters[0] if masters[0] in c["master_entries"] else masters[-1]
                 lines.append(f'  r{idx}_{first_m} -> {nid} [label="{match["score"]}%", color="{color}"];')
             else:
-                label = f'NO MATCH'
+                label = f'GAP'
                 lines.append(f'  {nid} [label="{label}", fillcolor="#fee2e2", color="#ef4444", style="filled,rounded,dashed"];')
                 first_m = masters[0] if masters[0] in c["master_entries"] else masters[-1]
                 lines.append(f'  r{idx}_{first_m} -> {nid} [style=dashed, color="#ef4444"];')
@@ -442,7 +598,6 @@ def build_overview_graph(classes, max_rows=30):
 # UI
 # ══════════════════════════════════════════════════════════════════════
 
-# ── Header ────────────────────────────────────────────────────────────
 st.markdown("""
 <div style="background: linear-gradient(90deg, #b91c1c, #7f1d1d); padding: 1.5rem 2rem; border-radius: 0.75rem; margin-bottom: 1rem;">
     <h1 style="color: white; margin: 0; font-size: 1.8rem;">KBR RDL Data Harmonizer</h1>
@@ -450,10 +605,10 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# ── Tabs ──────────────────────────────────────────────────────────────
-tab_upload, tab_dashboard, tab_visual, tab_search, tab_batch, tab_logs = st.tabs([
+tab_upload, tab_dashboard, tab_gaps, tab_visual, tab_search, tab_batch, tab_logs = st.tabs([
     "Upload & Configure",
     "Dashboard",
+    "Gap Analysis",
     "Connection Map",
     "Search",
     "Batch Process",
@@ -494,6 +649,17 @@ with tab_upload:
             f"**Dual master**: {FILE_TYPES[selected_masters[0]]} + "
             f"{FILE_TYPES[selected_masters[1]]} will be merged row-by-row."
         )
+
+    # Match threshold slider
+    st.divider()
+    threshold = st.slider(
+        "Match Threshold (%)",
+        min_value=50, max_value=100, value=st.session_state.match_threshold,
+        help="Minimum fuzzy score to count as a match. Below this = GAP. "
+             "75% is recommended — rejects weak matches like 'Junction Box' vs 'Function Block'.",
+    )
+    if threshold != st.session_state.match_threshold:
+        st.session_state.match_threshold = threshold
 
     st.divider()
 
@@ -550,13 +716,12 @@ with tab_upload:
 
     with col3:
         if st.session_state.classes:
-            export_df = build_export_df(st.session_state.classes)
-            csv_bytes = export_df.to_csv(index=False).encode()
+            xlsx_bytes = build_excel_bytes(st.session_state.classes)
             st.download_button(
-                "Export CSV",
-                data=csv_bytes,
-                file_name="harmonization_export.csv",
-                mime="text/csv",
+                "Export Excel",
+                data=xlsx_bytes,
+                file_name="harmonization_export.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
             )
 
@@ -580,44 +745,72 @@ with tab_dashboard:
         st.info("No harmonization results yet. Go to **Upload & Configure** to get started.")
     else:
         masters = st.session_state.masters
-
-        # Metrics
         total = len(classes)
         non_master_sources = set()
         gap_count = 0
         source_match_counts = {}
+        fully_matched = 0
         for c in classes:
             non_master_sources.update(c["matches"].keys())
             non_master_sources.update(c["gaps"])
             for src in c["matches"]:
                 source_match_counts[src] = source_match_counts.get(src, 0) + 1
             gap_count += len(c["gaps"])
+            if not c["gaps"] and (len(masters) == 1 or c.get("cross_score") is not None):
+                fully_matched += 1
 
-        metric_cols = st.columns(2 + len(source_match_counts))
-        with metric_cols[0]:
+        # Metrics row
+        mc = st.columns(3 + len(source_match_counts))
+        with mc[0]:
             st.metric("Total Classes", total)
-        with metric_cols[1]:
+        with mc[1]:
+            st.metric("Fully Matched", f"{fully_matched}/{total}")
+        with mc[2]:
             st.metric("Total Gaps", gap_count)
         for i, (src, cnt) in enumerate(source_match_counts.items()):
-            with metric_cols[2 + i]:
+            with mc[3 + i]:
                 pct = int(round(cnt / total * 100))
-                st.metric(f"{FILE_TYPES.get(src, src)} Match", f"{pct}%")
+                st.metric(f"{FILE_TYPES.get(src, src)}", f"{pct}% matched")
 
-        st.caption(f"**Masters:** {', '.join(FILE_TYPES.get(m, m) for m in masters)}")
+        st.caption(
+            f"**Masters:** {', '.join(FILE_TYPES.get(m, m) for m in masters)} "
+            f" |  **Threshold:** {st.session_state.match_threshold}%"
+        )
         st.divider()
 
         # Expandable results
         st.subheader("Harmonized Equipment Classes")
+
+        # Filter
+        filter_opt = st.radio(
+            "Show", ["All", "Fully Matched only", "Has Gaps only"], horizontal=True,
+        )
+
         for c in classes:
-            # Build header showing all master entries
+            has_gaps = bool(c["gaps"])
+            missing_master = len(masters) == 2 and c.get("cross_score") is None and len(c["master_entries"]) < 2
+
+            if filter_opt == "Fully Matched only" and (has_gaps or missing_master):
+                continue
+            if filter_opt == "Has Gaps only" and not has_gaps and not missing_master:
+                continue
+
+            # Status badge
+            if has_gaps or missing_master:
+                badge = ":red[HAS GAPS]"
+            else:
+                badge = ":green[FULLY MATCHED]"
+
             header_parts = []
             for m in masters:
                 me = c["master_entries"].get(m)
                 if me:
                     header_parts.append(f"{FILE_TYPES[m]}: {me['name']}")
+                else:
+                    header_parts.append(f"{FILE_TYPES[m]}: MISSING")
             header = " | ".join(header_parts) if header_parts else c["canonical_name"]
 
-            with st.expander(f"**{c['index']}. {header}**"):
+            with st.expander(f"**{c['index']}. {header}** — {badge}"):
                 # Master info
                 st.markdown("**Masters:**")
                 for m in masters:
@@ -625,30 +818,40 @@ with tab_dashboard:
                     if me:
                         st.markdown(f"- **{FILE_TYPES[m]}**: {me['name']} (ID: `{me['id']}`)")
                     else:
-                        st.markdown(f"- **{FILE_TYPES[m]}**: :red[not matched]")
+                        st.markdown(f"- :red[**{FILE_TYPES[m]}**: GAP - NOT IN THIS MASTER]")
 
-                if len(masters) == 2 and c.get("cross_score") is not None:
-                    st.markdown(f"- Master cross-match: **{c['cross_score']}%**")
+                if len(masters) == 2:
+                    cs = c.get("cross_score")
+                    if cs is not None:
+                        status, _ = classify_match(cs)
+                        st.markdown(f"- Masters cross-match: **{cs}%** ({status})")
+                    else:
+                        st.markdown("- :red[Masters cross-match: **GAP** — only in one master]")
 
                 # Other matches
                 if c["matches"]:
                     st.markdown("**Matched sources:**")
                     for src, match in c["matches"].items():
                         score = match["score"]
+                        status, conf = classify_match(score)
                         if score >= 90:
                             color = "green"
-                        elif score >= 70:
+                        elif score >= 75:
                             color = "orange"
                         else:
                             color = "red"
                         st.markdown(
                             f"- :{color}[**{FILE_TYPES.get(src, src)}**]: "
-                            f"{match['name']} (ID: `{match['id']}`) — **{score}%**"
+                            f"{match['name']} (ID: `{match['id']}`) — **{score}%** ({status})"
                         )
+
                 if c["gaps"]:
-                    st.markdown("**Gaps:**")
+                    st.markdown("**:red[GAPS — Missing from these sources:]**")
                     for g in c["gaps"]:
-                        st.markdown(f"- :red[{FILE_TYPES.get(g, g)}] — No match")
+                        st.markdown(
+                            f"- :red[**{FILE_TYPES.get(g, g)}**] — No match above "
+                            f"{st.session_state.match_threshold}% threshold"
+                        )
 
         # Table view
         st.divider()
@@ -658,7 +861,83 @@ with tab_dashboard:
 
 
 # ══════════════════════════════════════════════════════════════════════
-# TAB: Connection Map (Visual)
+# TAB: Gap Analysis
+# ══════════════════════════════════════════════════════════════════════
+with tab_gaps:
+    classes = st.session_state.classes
+    if not classes:
+        st.info("Run harmonization first to see gap analysis.")
+    else:
+        masters = st.session_state.masters
+
+        # Collect all gaps
+        all_gaps = []
+        for c in classes:
+            # Gap in non-master sources
+            for g in c["gaps"]:
+                present_in = [FILE_TYPES.get(m, m) for m in masters if m in c["master_entries"]]
+                present_in += [FILE_TYPES.get(s, s) for s in c["matches"]]
+                all_gaps.append({
+                    "Equipment Class": c["canonical_name"],
+                    "Present In": ", ".join(present_in),
+                    "MISSING From": FILE_TYPES.get(g, g),
+                    "Gap Type": "Not in source",
+                })
+            # Gap in dual-master cross-match
+            if len(masters) == 2:
+                for m in masters:
+                    if m not in c["master_entries"]:
+                        present_in = [FILE_TYPES.get(mm, mm) for mm in masters if mm in c["master_entries"]]
+                        all_gaps.append({
+                            "Equipment Class": c["canonical_name"],
+                            "Present In": ", ".join(present_in),
+                            "MISSING From": FILE_TYPES.get(m, m),
+                            "Gap Type": "Not in master",
+                        })
+
+        st.subheader(f"Gap Analysis — {len(all_gaps)} gaps found")
+
+        if not all_gaps:
+            st.success("No gaps! All equipment classes are matched across all sources.")
+        else:
+            # Summary by source
+            st.markdown("**Gaps per source:**")
+            gap_by_source = {}
+            for g in all_gaps:
+                src = g["MISSING From"]
+                gap_by_source[src] = gap_by_source.get(src, 0) + 1
+
+            gap_cols = st.columns(len(gap_by_source))
+            for i, (src, cnt) in enumerate(sorted(gap_by_source.items(), key=lambda x: -x[1])):
+                with gap_cols[i]:
+                    st.metric(src, f"{cnt} gaps")
+
+            st.divider()
+
+            # Filter by source
+            source_filter = st.selectbox(
+                "Filter by missing source",
+                ["All"] + sorted(gap_by_source.keys()),
+            )
+
+            filtered = all_gaps if source_filter == "All" else [g for g in all_gaps if g["MISSING From"] == source_filter]
+
+            gap_df = pd.DataFrame(filtered)
+            st.dataframe(gap_df, use_container_width=True, hide_index=True)
+
+            # Actionable list
+            st.divider()
+            st.subheader("Action Items")
+            for i, g in enumerate(filtered):
+                st.markdown(
+                    f"{i+1}. **{g['Equipment Class']}** — "
+                    f"Add to :red[**{g['MISSING From']}**] "
+                    f"(currently in: {g['Present In']})"
+                )
+
+
+# ══════════════════════════════════════════════════════════════════════
+# TAB: Connection Map
 # ══════════════════════════════════════════════════════════════════════
 with tab_visual:
     classes = st.session_state.classes
@@ -674,7 +953,6 @@ with tab_visual:
         )
 
         if view_mode == "Per-class detail":
-            # Dropdown to pick which class to visualize
             options = [f"{c['index']}. {c['canonical_name']}" for c in classes]
             selected = st.selectbox("Select equipment class", options)
             if selected:
@@ -682,14 +960,12 @@ with tab_visual:
                 entry = classes[idx]
                 dot = build_connection_graph(entry)
                 st.graphviz_chart(dot, use_container_width=True)
-
-                # Legend
-                st.caption("Solid lines = matched. Dashed = gap (no match). Numbers = match score %.")
+                st.caption("Solid lines = matched. Dashed red = GAP (no match). Numbers = match score %.")
         else:
             dot = build_overview_graph(classes, max_rows=20)
             st.graphviz_chart(dot, use_container_width=True)
             if len(classes) > 20:
-                st.caption(f"Showing first 20 of {len(classes)} classes. Use per-class view for full detail.")
+                st.caption(f"Showing first 20 of {len(classes)} classes.")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -707,15 +983,16 @@ with tab_search:
             name, score, idx = result
             score = int(round(score))
             c = st.session_state.classes[idx]
+            status, conf = classify_match(score)
 
             if score >= 90:
                 color = "green"
-            elif score >= 70:
+            elif score >= 75:
                 color = "orange"
             else:
                 color = "red"
 
-            st.markdown(f"### :{color}[Best match: **{name}** — {score}%]")
+            st.markdown(f"### :{color}[Best match: **{name}** — {score}% ({status})]")
 
             masters = st.session_state.masters
             col_l, col_r = st.columns(2)
@@ -725,6 +1002,8 @@ with tab_search:
                     me = c["master_entries"].get(m)
                     if me:
                         st.markdown(f"- **{FILE_TYPES[m]}**: {me['name']} (`{me['id']}`)")
+                    else:
+                        st.markdown(f"- :red[**{FILE_TYPES[m]}**: GAP]")
 
             with col_r:
                 if c["matches"]:
@@ -732,9 +1011,8 @@ with tab_search:
                     for src, match in c["matches"].items():
                         st.markdown(f"- **{FILE_TYPES.get(src, src)}**: {match['name']} — {match['score']}%")
                 if c["gaps"]:
-                    st.markdown("**Gaps:** " + ", ".join(FILE_TYPES.get(g, g) for g in c["gaps"]))
+                    st.markdown("**:red[Gaps:]** " + ", ".join(FILE_TYPES.get(g, g) for g in c["gaps"]))
 
-            # Show connection diagram for this result
             st.divider()
             dot = build_connection_graph(c)
             st.graphviz_chart(dot, use_container_width=True)
@@ -774,15 +1052,18 @@ with tab_batch:
                 match = process.extractOne(item, names, scorer=fuzz.token_sort_ratio)
                 if match:
                     name, score, idx = match
+                    score = int(round(score))
                     c = st.session_state.classes[idx]
+                    status, conf = classify_match(score)
                     results.append({
                         "Input": item,
                         "Best Match": name,
-                        "Score %": int(round(score)),
-                        "Gaps": ", ".join(FILE_TYPES.get(g, g) for g in c["gaps"]),
+                        "Score %": score,
+                        "Status": status,
+                        "Gaps": ", ".join(FILE_TYPES.get(g, g) for g in c["gaps"]) or "None",
                     })
                 else:
-                    results.append({"Input": item, "Best Match": "—", "Score %": 0, "Gaps": "—"})
+                    results.append({"Input": item, "Best Match": "—", "Score %": 0, "Status": "No Match", "Gaps": "—"})
 
             result_df = pd.DataFrame(results)
             st.dataframe(result_df, use_container_width=True, hide_index=True)
