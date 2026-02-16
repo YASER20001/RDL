@@ -1,93 +1,56 @@
 """
-KBR RDL Data Harmonizer v2.0 - Backend API
-Flexible master file selection: users choose 1 or 2 files as the master source.
+KBR RDL Data Harmonizer v2.0 — Streamlit App
+Run:  streamlit run main.py
 """
 
-import os
 import uuid
-import logging
-from datetime import datetime
-from typing import Optional
-
 import pandas as pd
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+import streamlit as st
 from rapidfuzz import fuzz, process
-from pydantic import BaseModel
 
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("harmonizer")
-
-# ---------------------------------------------------------------------------
-# App
-# ---------------------------------------------------------------------------
-app = FastAPI(title="KBR RDL Data Harmonizer", version="2.0.0")
-
-cors_origins = os.getenv("CORS_ORIGINS", "*").split(",")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+# ──────────────────────────────────────────────────────────────────────
+# Page config
+# ──────────────────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="KBR RDL Data Harmonizer",
+    page_icon="⚙️",
+    layout="wide",
 )
 
-UPLOAD_DIR = os.path.join(os.path.dirname(__file__), "uploads")
-os.makedirs(UPLOAD_DIR, exist_ok=True)
-MAX_UPLOAD_SIZE = int(os.getenv("MAX_UPLOAD_SIZE_MB", "50")) * 1024 * 1024
+# ──────────────────────────────────────────────────────────────────────
+# Session state defaults
+# ──────────────────────────────────────────────────────────────────────
+DEFAULTS = {
+    "files": {},           # key -> {filename, records: list[dict]}
+    "masters": [],         # list of selected master keys
+    "classes": [],         # harmonized output
+    "logs": [],            # log entries
+}
+for k, v in DEFAULTS.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
 
-# ---------------------------------------------------------------------------
-# In-memory state
-# ---------------------------------------------------------------------------
-FILES: dict = {}          # type -> {path, filename, df_dict}
-CLASSES: list = []        # harmonized classes
-LOGS: list = []           # system logs
-MASTER_CONFIG: dict = {   # which files act as master
-    "masters": [],        # list of file type keys (e.g. ["aramco", "cfihos"])
+FILE_TYPES = {
+    "aramco":  "Saudi Aramco 9COM",
+    "cfihos":  "CFIHOS Standard",
+    "kbr":     "KBR FEED",
+    "ltc":     "LTC Contractor",
+    "sa_doc":  "SA Document",
 }
 
-FILE_TYPES = ["aramco", "cfihos", "kbr", "ltc", "sa_doc"]
+
+def add_log(msg, level="INFO"):
+    st.session_state.logs.append(f"[{level}] {msg}")
 
 
-def add_log(msg: str, level: str = "info"):
-    entry = {"ts": datetime.utcnow().isoformat(), "level": level, "msg": msg}
-    LOGS.append(entry)
-    getattr(logger, level, logger.info)(msg)
-
-
-# ---------------------------------------------------------------------------
-# Pydantic models
-# ---------------------------------------------------------------------------
-class SearchRequest(BaseModel):
-    query: str
-    limit: int = 20
-
-
-class BatchRequest(BaseModel):
-    items: list[str]
-
-
-class MasterConfigRequest(BaseModel):
-    """Configure which uploaded file(s) serve as the master source.
-    Accepts 1 or 2 file type keys from: aramco, cfihos, kbr, ltc, sa_doc
-    """
-    masters: list[str]
-
-
-# ---------------------------------------------------------------------------
-# File readers – each returns a list[dict] with at least {id, name}
-# ---------------------------------------------------------------------------
-
-def _read_aramco(path: str) -> list[dict]:
-    """Read Aramco 9COM .xlsx – sheet 'ISM Functional Classes'."""
+# ──────────────────────────────────────────────────────────────────────
+# File readers
+# ──────────────────────────────────────────────────────────────────────
+def read_aramco(file) -> list[dict]:
     try:
-        df = pd.read_excel(path, sheet_name="ISM Functional Classes")
+        df = pd.read_excel(file, sheet_name="ISM Functional Classes")
     except Exception:
-        df = pd.read_excel(path, sheet_name=0)
+        df = pd.read_excel(file, sheet_name=0)
     records = []
     for _, row in df.iterrows():
         records.append({
@@ -99,12 +62,11 @@ def _read_aramco(path: str) -> list[dict]:
     return [r for r in records if r["name"].strip()]
 
 
-def _read_cfihos(path: str) -> list[dict]:
-    """Read CFIHOS .xlsx – sheet 'equipment class'."""
+def read_cfihos(file) -> list[dict]:
     try:
-        df = pd.read_excel(path, sheet_name="equipment class")
+        df = pd.read_excel(file, sheet_name="equipment class")
     except Exception:
-        df = pd.read_excel(path, sheet_name=0)
+        df = pd.read_excel(file, sheet_name=0)
     records = []
     for _, row in df.iterrows():
         records.append({
@@ -115,9 +77,8 @@ def _read_cfihos(path: str) -> list[dict]:
     return [r for r in records if r["name"].strip()]
 
 
-def _read_kbr(path: str) -> list[dict]:
-    """Read KBR FEED .xlsx."""
-    df = pd.read_excel(path, sheet_name=0)
+def read_kbr(file) -> list[dict]:
+    df = pd.read_excel(file, sheet_name=0)
     records = []
     for _, row in df.iterrows():
         records.append({
@@ -129,12 +90,11 @@ def _read_kbr(path: str) -> list[dict]:
     return [r for r in records if r["name"].strip()]
 
 
-def _read_ltc(path: str) -> list[dict]:
-    """Read LTC .xlsx – sheet 'ISM Functional Classes'."""
+def read_ltc(file) -> list[dict]:
     try:
-        df = pd.read_excel(path, sheet_name="ISM Functional Classes")
+        df = pd.read_excel(file, sheet_name="ISM Functional Classes")
     except Exception:
-        df = pd.read_excel(path, sheet_name=0)
+        df = pd.read_excel(file, sheet_name=0)
     records = []
     for _, row in df.iterrows():
         records.append({
@@ -145,12 +105,11 @@ def _read_ltc(path: str) -> list[dict]:
     return [r for r in records if r["name"].strip()]
 
 
-def _read_sa_doc(path: str) -> list[dict]:
-    """Read SA DOC .xlsx – sheet 'SA_DOC_attributes'."""
+def read_sa_doc(file) -> list[dict]:
     try:
-        df = pd.read_excel(path, sheet_name="SA_DOC_attributes")
+        df = pd.read_excel(file, sheet_name="SA_DOC_attributes")
     except Exception:
-        df = pd.read_excel(path, sheet_name=0)
+        df = pd.read_excel(file, sheet_name=0)
     records = []
     for _, row in df.iterrows():
         records.append({
@@ -163,20 +122,18 @@ def _read_sa_doc(path: str) -> list[dict]:
 
 
 READERS = {
-    "aramco": _read_aramco,
-    "cfihos": _read_cfihos,
-    "kbr": _read_kbr,
-    "ltc": _read_ltc,
-    "sa_doc": _read_sa_doc,
+    "aramco": read_aramco,
+    "cfihos": read_cfihos,
+    "kbr": read_kbr,
+    "ltc": read_ltc,
+    "sa_doc": read_sa_doc,
 }
 
 
-# ---------------------------------------------------------------------------
+# ──────────────────────────────────────────────────────────────────────
 # Harmonization engine
-# ---------------------------------------------------------------------------
-
-def _fuzzy_match(name: str, candidates: list[dict], threshold: int = 60) -> Optional[dict]:
-    """Return the best fuzzy match from candidates or None."""
+# ──────────────────────────────────────────────────────────────────────
+def fuzzy_match(name, candidates, threshold=60):
     if not candidates:
         return None
     names = [c["name"] for c in candidates]
@@ -187,50 +144,28 @@ def _fuzzy_match(name: str, candidates: list[dict], threshold: int = 60) -> Opti
     return {**candidates[idx], "score": round(score, 1)}
 
 
-def run_harmonization() -> list[dict]:
-    """Run harmonization using the configured master(s).
+def run_harmonization():
+    masters = st.session_state.masters
+    files = st.session_state.files
 
-    If one master is selected, that file's classes are used as the base and
-    all other uploaded files are matched against it.
-
-    If two masters are selected, classes from both masters are merged
-    (union) to form the base, and the remaining files are matched against
-    this combined set.
-    """
-    masters = MASTER_CONFIG.get("masters", [])
-    if not masters:
-        raise ValueError("No master file configured. Set at least one master.")
-
-    # Validate masters are uploaded
+    # Build master class list (union of 1 or 2 masters)
+    master_classes = []
+    seen = set()
     for m in masters:
-        if m not in FILES:
-            raise ValueError(f"Master '{m}' is configured but not uploaded.")
-
-    # Build master class list
-    master_classes: list[dict] = []
-    seen_names: set = set()
-    for m in masters:
-        reader = READERS[m]
-        records = reader(FILES[m]["path"])
-        for r in records:
+        for r in files[m]["records"]:
             key = r["name"].strip().lower()
-            if key not in seen_names:
-                seen_names.add(key)
+            if key not in seen:
+                seen.add(key)
                 master_classes.append(r)
 
-    add_log(f"Master set built from {masters} – {len(master_classes)} unique classes")
+    add_log(f"Master set from {masters}: {len(master_classes)} unique classes")
 
-    # Build lookup tables for non-master files
-    other_sources: dict[str, list[dict]] = {}
-    for ftype, finfo in FILES.items():
-        if ftype not in masters:
-            reader = READERS[ftype]
-            other_sources[ftype] = reader(finfo["path"])
+    # Non-master sources
+    other = {k: v["records"] for k, v in files.items() if k not in masters}
 
-    # Harmonize
     harmonized = []
     for idx, mc in enumerate(master_classes):
-        entry: dict = {
+        entry = {
             "uid": str(uuid.uuid4()),
             "index": idx + 1,
             "master_id": mc["id"],
@@ -239,34 +174,32 @@ def run_harmonization() -> list[dict]:
             "matches": {},
             "gaps": [],
         }
-        for src, candidates in other_sources.items():
-            match = _fuzzy_match(mc["name"], candidates)
+        # Match against non-master files
+        for src, candidates in other.items():
+            match = fuzzy_match(mc["name"], candidates)
             if match:
                 entry["matches"][src] = match
             else:
                 entry["gaps"].append(src)
 
-        # If two masters, also cross-match between them
+        # Cross-match between two masters
         if len(masters) == 2:
-            other_master = [m for m in masters if m != mc.get("source")][0] if mc.get("source") in masters else None
-            if other_master and other_master in FILES:
-                other_master_records = READERS[other_master](FILES[other_master]["path"])
-                match = _fuzzy_match(mc["name"], other_master_records)
+            other_master = [m for m in masters if m != mc.get("source")]
+            if other_master and other_master[0] in files:
+                match = fuzzy_match(mc["name"], files[other_master[0]]["records"])
                 if match:
-                    entry["matches"][other_master] = match
+                    entry["matches"][other_master[0]] = match
 
         harmonized.append(entry)
 
-    add_log(f"Harmonization complete: {len(harmonized)} classes processed")
+    add_log(f"Harmonization complete: {len(harmonized)} classes")
     return harmonized
 
 
-# ---------------------------------------------------------------------------
-# Demo data generator
-# ---------------------------------------------------------------------------
-
-def _generate_demo_data():
-    """Generate small in-memory demo data for all five sources."""
+# ──────────────────────────────────────────────────────────────────────
+# Demo data
+# ──────────────────────────────────────────────────────────────────────
+def load_demo_data():
     demo = {
         "aramco": [
             {"id": "AC-001", "name": "Centrifugal Pump", "cfihos_ref": "CF-101", "source": "aramco"},
@@ -311,281 +244,332 @@ def _generate_demo_data():
             {"id": "SA-A03", "name": "Material of Construction", "cfihos_name": "Material", "source": "sa_doc"},
         ],
     }
-    return demo
+    for key, records in demo.items():
+        st.session_state.files[key] = {"filename": f"demo_{key}.xlsx", "records": records}
+    add_log("Demo data loaded for all 5 sources")
 
 
-# ---------------------------------------------------------------------------
-# API Routes
-# ---------------------------------------------------------------------------
-
-@app.get("/api/health")
-def health():
-    return {"status": "ok", "version": "2.0.0"}
-
-
-# ---- Master configuration -------------------------------------------------
-
-@app.get("/api/master-config")
-def get_master_config():
-    """Return the current master file configuration."""
-    return {
-        "masters": MASTER_CONFIG["masters"],
-        "available": list(FILES.keys()),
-        "all_types": FILE_TYPES,
-    }
-
-
-@app.post("/api/master-config")
-def set_master_config(req: MasterConfigRequest):
-    """Set which uploaded file(s) act as the master source (1 or 2)."""
-    if len(req.masters) < 1 or len(req.masters) > 2:
-        raise HTTPException(400, "Select exactly 1 or 2 master files.")
-    for m in req.masters:
-        if m not in FILE_TYPES:
-            raise HTTPException(400, f"Unknown file type: {m}")
-    MASTER_CONFIG["masters"] = req.masters
-    add_log(f"Master config updated: {req.masters}")
-    return {"masters": MASTER_CONFIG["masters"]}
-
-
-# ---- File upload -----------------------------------------------------------
-
-@app.post("/api/upload/{file_type}")
-async def upload_file(file_type: str, file: UploadFile = File(...)):
-    if file_type not in FILE_TYPES:
-        raise HTTPException(400, f"Unknown file type: {file_type}. Use one of {FILE_TYPES}")
-
-    ext = os.path.splitext(file.filename or "")[1].lower()
-    if ext not in (".xlsx", ".xls", ".csv"):
-        raise HTTPException(400, "Only .xlsx, .xls, and .csv files are accepted.")
-
-    content = await file.read()
-    if len(content) > MAX_UPLOAD_SIZE:
-        raise HTTPException(413, f"File exceeds {MAX_UPLOAD_SIZE // (1024*1024)}MB limit.")
-
-    save_path = os.path.join(UPLOAD_DIR, f"{file_type}_{uuid.uuid4().hex}{ext}")
-    with open(save_path, "wb") as f:
-        f.write(content)
-
-    # Quick validation – try to read it
-    try:
-        reader = READERS[file_type]
-        records = reader(save_path)
-    except Exception as e:
-        os.remove(save_path)
-        raise HTTPException(422, f"Could not parse file: {e}")
-
-    FILES[file_type] = {"path": save_path, "filename": file.filename, "count": len(records)}
-    add_log(f"Uploaded {file_type}: {file.filename} ({len(records)} records)")
-
-    # Auto-set master if none configured yet
-    if not MASTER_CONFIG["masters"]:
-        MASTER_CONFIG["masters"] = [file_type]
-        add_log(f"Auto-set master to [{file_type}] (first upload)")
-
-    return {
-        "file_type": file_type,
-        "filename": file.filename,
-        "records": len(records),
-        "masters": MASTER_CONFIG["masters"],
-    }
-
-
-# ---- Harmonize -------------------------------------------------------------
-
-@app.post("/api/harmonize")
-def harmonize():
-    if not FILES:
-        raise HTTPException(400, "No files uploaded yet.")
-    if not MASTER_CONFIG["masters"]:
-        raise HTTPException(400, "No master file configured.")
-    try:
-        global CLASSES
-        CLASSES = run_harmonization()
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    return {"total": len(CLASSES), "masters": MASTER_CONFIG["masters"]}
-
-
-# ---- Classes ---------------------------------------------------------------
-
-@app.get("/api/classes")
-def list_classes(skip: int = 0, limit: int = 100):
-    return {"total": len(CLASSES), "items": CLASSES[skip : skip + limit]}
-
-
-@app.get("/api/classes/{uid}")
-def get_class(uid: str):
-    for c in CLASSES:
-        if c["uid"] == uid:
-            return c
-    raise HTTPException(404, "Class not found")
-
-
-# ---- Search ----------------------------------------------------------------
-
-@app.post("/api/search")
-def search_classes(req: SearchRequest):
-    if not CLASSES:
-        return {"results": []}
-    names = [c["master_name"] for c in CLASSES]
-    matches = process.extract(req.query, names, scorer=fuzz.token_sort_ratio, limit=req.limit)
-    results = []
-    for name, score, idx in matches:
-        entry = {**CLASSES[idx], "search_score": round(score, 1)}
-        results.append(entry)
-    return {"results": results}
-
-
-# ---- Batch -----------------------------------------------------------------
-
-@app.post("/api/batch")
-def batch_process(req: BatchRequest):
-    if not CLASSES:
-        raise HTTPException(400, "Run harmonization first.")
-    results = []
-    names = [c["master_name"] for c in CLASSES]
-    for item in req.items:
-        match = process.extractOne(item, names, scorer=fuzz.token_sort_ratio)
-        if match:
-            name, score, idx = match
-            results.append({"input": item, "match": CLASSES[idx], "score": round(score, 1)})
-        else:
-            results.append({"input": item, "match": None, "score": 0})
-    return {"results": results}
-
-
-# ---- Stats -----------------------------------------------------------------
-
-@app.get("/api/stats")
-def get_stats():
-    total = len(CLASSES)
-    if total == 0:
-        return {"total": 0, "matches": {}, "gaps": 0, "masters": MASTER_CONFIG["masters"]}
-
-    source_match_counts: dict[str, int] = {}
-    gap_count = 0
-    for c in CLASSES:
-        for src in c["matches"]:
-            source_match_counts[src] = source_match_counts.get(src, 0) + 1
-        gap_count += len(c["gaps"])
-
-    match_rates = {src: round(cnt / total * 100, 1) for src, cnt in source_match_counts.items()}
-
-    return {
-        "total": total,
-        "matches": match_rates,
-        "gap_count": gap_count,
-        "masters": MASTER_CONFIG["masters"],
-        "files_uploaded": list(FILES.keys()),
-    }
-
-
-# ---- Export ----------------------------------------------------------------
-
-@app.get("/api/export/csv")
-def export_csv():
-    if not CLASSES:
-        raise HTTPException(400, "No harmonization data to export.")
-
-    import io, csv
-    buf = io.StringIO()
-    writer = csv.writer(buf)
-
-    # Header
+# ──────────────────────────────────────────────────────────────────────
+# CSV export helper
+# ──────────────────────────────────────────────────────────────────────
+def build_export_csv(classes):
     sources = set()
-    for c in CLASSES:
+    for c in classes:
         sources.update(c["matches"].keys())
         sources.update(c["gaps"])
     sources = sorted(sources)
 
-    header = ["#", "Master ID", "Master Name", "Master Source"]
-    for s in sources:
-        header += [f"{s}_id", f"{s}_name", f"{s}_score"]
-    header.append("Gaps")
-    writer.writerow(header)
-
-    for c in CLASSES:
-        row = [c["index"], c["master_id"], c["master_name"], c["master_source"]]
+    rows = []
+    for c in classes:
+        row = {
+            "#": c["index"],
+            "Master ID": c["master_id"],
+            "Master Name": c["master_name"],
+            "Master Source": c["master_source"],
+        }
         for s in sources:
             m = c["matches"].get(s)
-            if m:
-                row += [m.get("id", ""), m.get("name", ""), m.get("score", "")]
-            else:
-                row += ["", "", ""]
-        row.append(", ".join(c["gaps"]))
-        writer.writerow(row)
+            row[f"{s}_id"] = m["id"] if m else ""
+            row[f"{s}_name"] = m["name"] if m else ""
+            row[f"{s}_score"] = m["score"] if m else ""
+        row["Gaps"] = ", ".join(c["gaps"])
+        rows.append(row)
 
-    buf.seek(0)
-    return StreamingResponse(
-        iter([buf.getvalue()]),
-        media_type="text/csv",
-        headers={"Content-Disposition": "attachment; filename=harmonization_export.csv"},
+    return pd.DataFrame(rows)
+
+
+# ══════════════════════════════════════════════════════════════════════
+# UI
+# ══════════════════════════════════════════════════════════════════════
+
+# ── Header ────────────────────────────────────────────────────────────
+st.markdown("""
+<div style="background: linear-gradient(90deg, #b91c1c, #7f1d1d); padding: 1.5rem 2rem; border-radius: 0.75rem; margin-bottom: 1rem;">
+    <h1 style="color: white; margin: 0; font-size: 1.8rem;">KBR RDL Data Harmonizer</h1>
+    <p style="color: #fca5a5; margin: 0; font-size: 0.9rem;">Equipment Class Harmonization v2.0</p>
+</div>
+""", unsafe_allow_html=True)
+
+# ── Tabs ──────────────────────────────────────────────────────────────
+tab_upload, tab_dashboard, tab_search, tab_batch, tab_logs = st.tabs([
+    "Upload & Configure",
+    "Dashboard",
+    "Search",
+    "Batch Process",
+    "Logs",
+])
+
+# ══════════════════════════════════════════════════════════════════════
+# TAB: Upload & Configure
+# ══════════════════════════════════════════════════════════════════════
+with tab_upload:
+
+    # ── Master selection ──────────────────────────────────────────────
+    st.subheader("Step 1 — Choose Master File(s)")
+    st.caption(
+        "Select **1 or 2** file types as the master source. "
+        "The master defines the base set of equipment classes; "
+        "all other uploaded files are fuzzy-matched against it."
     )
 
+    master_options = list(FILE_TYPES.keys())
+    selected_masters = st.multiselect(
+        "Master file(s)",
+        options=master_options,
+        default=st.session_state.masters or [],
+        format_func=lambda k: FILE_TYPES[k],
+        max_selections=2,
+        help="Pick 1 or 2 systems to use as the master reference.",
+    )
 
-# ---- Demo ------------------------------------------------------------------
+    if selected_masters != st.session_state.masters:
+        st.session_state.masters = selected_masters
+        add_log(f"Master config changed to: {selected_masters}")
 
-@app.post("/api/load-demo")
-def load_demo(masters: Optional[list[str]] = Query(default=None)):
-    """Load demo data. Optionally specify master(s) via query param, e.g.
-    ?masters=aramco&masters=cfihos  (two masters)
-    ?masters=kbr                   (one master)
-    Defaults to ["aramco"].
-    """
-    demo = _generate_demo_data()
+    if len(selected_masters) == 0:
+        st.warning("Select at least one master to run harmonization.")
+    elif len(selected_masters) == 1:
+        st.info(f"**Single master**: {FILE_TYPES[selected_masters[0]]} will be the base.")
+    else:
+        st.info(
+            f"**Dual master**: {FILE_TYPES[selected_masters[0]]} + "
+            f"{FILE_TYPES[selected_masters[1]]} will be merged as the base."
+        )
 
-    # Store demo data as virtual files
-    for ftype, records in demo.items():
-        # Write a small xlsx so readers work
-        df = pd.DataFrame(records)
-        path = os.path.join(UPLOAD_DIR, f"demo_{ftype}.xlsx")
-        df.to_excel(path, index=False)
-        FILES[ftype] = {"path": path, "filename": f"demo_{ftype}.xlsx", "count": len(records)}
+    st.divider()
 
-    chosen_masters = masters or ["aramco"]
-    for m in chosen_masters:
-        if m not in FILE_TYPES:
-            raise HTTPException(400, f"Unknown master type: {m}")
-    if len(chosen_masters) > 2:
-        raise HTTPException(400, "Maximum 2 masters allowed.")
+    # ── File uploads ──────────────────────────────────────────────────
+    st.subheader("Step 2 — Upload Data Files")
+    cols = st.columns(3)
+    for i, (key, label) in enumerate(FILE_TYPES.items()):
+        with cols[i % 3]:
+            is_master = key in st.session_state.masters
+            badge = " ⭐ MASTER" if is_master else ""
+            uploaded = st.file_uploader(
+                f"{label}{badge}",
+                type=["xlsx", "xls", "csv"],
+                key=f"upload_{key}",
+            )
+            if uploaded is not None:
+                if key not in st.session_state.files or st.session_state.files[key]["filename"] != uploaded.name:
+                    try:
+                        reader = READERS[key]
+                        records = reader(uploaded)
+                        st.session_state.files[key] = {"filename": uploaded.name, "records": records}
+                        add_log(f"Uploaded {key}: {uploaded.name} ({len(records)} records)")
+                        st.success(f"{len(records)} records loaded")
+                    except Exception as e:
+                        st.error(f"Error reading file: {e}")
+                else:
+                    st.success(f"{len(st.session_state.files[key]['records'])} records loaded")
 
-    MASTER_CONFIG["masters"] = chosen_masters
-    add_log(f"Demo data loaded. Masters: {chosen_masters}")
+            if key in st.session_state.files:
+                st.caption(f"File: {st.session_state.files[key]['filename']}")
 
-    global CLASSES
-    CLASSES = run_harmonization()
+    st.divider()
 
-    return {
-        "message": "Demo data loaded",
-        "masters": chosen_masters,
-        "total_classes": len(CLASSES),
-        "files": list(FILES.keys()),
-    }
+    # ── Actions ───────────────────────────────────────────────────────
+    st.subheader("Step 3 — Run")
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        if st.button("Run Harmonization", type="primary", use_container_width=True):
+            if not st.session_state.masters:
+                st.error("Select at least one master file first.")
+            elif not all(m in st.session_state.files for m in st.session_state.masters):
+                missing = [m for m in st.session_state.masters if m not in st.session_state.files]
+                st.error(f"Master file(s) not uploaded: {', '.join(missing)}")
+            else:
+                st.session_state.classes = run_harmonization()
+                st.success(f"Harmonized {len(st.session_state.classes)} classes!")
+                st.rerun()
+
+    with col2:
+        if st.button("Load Demo Data", use_container_width=True):
+            load_demo_data()
+            if not st.session_state.masters:
+                st.session_state.masters = ["aramco"]
+            st.session_state.classes = run_harmonization()
+            st.success("Demo loaded and harmonized!")
+            st.rerun()
+
+    with col3:
+        if st.session_state.classes:
+            csv_df = build_export_csv(st.session_state.classes)
+            csv_bytes = csv_df.to_csv(index=False).encode()
+            st.download_button(
+                "Export CSV",
+                data=csv_bytes,
+                file_name="harmonization_export.csv",
+                mime="text/csv",
+                use_container_width=True,
+            )
+
+    # ── Status summary ────────────────────────────────────────────────
+    if st.session_state.files:
+        st.divider()
+        st.caption("**Uploaded files:**")
+        status_cols = st.columns(len(st.session_state.files))
+        for i, (k, v) in enumerate(st.session_state.files.items()):
+            with status_cols[i]:
+                is_m = "MASTER " if k in st.session_state.masters else ""
+                st.metric(f"{is_m}{FILE_TYPES[k]}", f"{len(v['records'])} records")
 
 
-# ---- Logs ------------------------------------------------------------------
+# ══════════════════════════════════════════════════════════════════════
+# TAB: Dashboard
+# ══════════════════════════════════════════════════════════════════════
+with tab_dashboard:
+    classes = st.session_state.classes
 
-@app.get("/api/logs")
-def get_logs():
-    return {"logs": LOGS[-100:]}
+    if not classes:
+        st.info("No harmonization results yet. Go to **Upload & Configure** to get started.")
+    else:
+        # ── Metrics row ───────────────────────────────────────────────
+        sources = set()
+        gap_count = 0
+        source_match_counts = {}
+        for c in classes:
+            sources.update(c["matches"].keys())
+            sources.update(c["gaps"])
+            for src in c["matches"]:
+                source_match_counts[src] = source_match_counts.get(src, 0) + 1
+            gap_count += len(c["gaps"])
+
+        total = len(classes)
+        metric_cols = st.columns(2 + len(source_match_counts))
+        with metric_cols[0]:
+            st.metric("Total Classes", total)
+        with metric_cols[1]:
+            st.metric("Gaps", gap_count)
+        for i, (src, cnt) in enumerate(source_match_counts.items()):
+            with metric_cols[2 + i]:
+                pct = round(cnt / total * 100, 1)
+                st.metric(f"{src.upper()} Match", f"{pct}%")
+
+        st.caption(f"**Master:** {', '.join(st.session_state.masters)}")
+        st.divider()
+
+        # ── Results table ─────────────────────────────────────────────
+        st.subheader("Harmonized Equipment Classes")
+
+        for c in classes:
+            with st.expander(f"**{c['index']}. {c['master_name']}** ({c['master_source']})"):
+                if c["matches"]:
+                    st.markdown("**Matches:**")
+                    for src, m in c["matches"].items():
+                        score = m["score"]
+                        if score >= 90:
+                            color = "green"
+                        elif score >= 70:
+                            color = "orange"
+                        else:
+                            color = "red"
+                        st.markdown(
+                            f"- :{color}[**{src.upper()}**]: {m['name']} "
+                            f"(ID: `{m['id']}`) — **{score}%**"
+                        )
+                if c["gaps"]:
+                    st.markdown("**Gaps (no match):**")
+                    for g in c["gaps"]:
+                        st.markdown(f"- :red[{g.upper()}] — No match found")
+
+        # ── Full table view ───────────────────────────────────────────
+        st.divider()
+        st.subheader("Table View")
+        export_df = build_export_csv(classes)
+        st.dataframe(export_df, use_container_width=True, hide_index=True)
 
 
-# ---- Documents (SA DOC) ---------------------------------------------------
+# ══════════════════════════════════════════════════════════════════════
+# TAB: Search
+# ══════════════════════════════════════════════════════════════════════
+with tab_search:
+    st.subheader("Search Equipment Classes")
+    query = st.text_input("Equipment name", placeholder="e.g. centrifugal pump, heat exchanger...")
 
-@app.get("/api/documents")
-def get_documents():
-    if "sa_doc" not in FILES:
-        return {"documents": []}
-    records = READERS["sa_doc"](FILES["sa_doc"]["path"])
-    return {"documents": records}
+    if query and st.session_state.classes:
+        names = [c["master_name"] for c in st.session_state.classes]
+        matches = process.extract(query, names, scorer=fuzz.token_sort_ratio, limit=15)
+        for name, score, idx in matches:
+            c = st.session_state.classes[idx]
+            if score >= 90:
+                color = "green"
+            elif score >= 70:
+                color = "orange"
+            else:
+                color = "red"
+            with st.expander(f":{color}[**{name}**] — {score}% match"):
+                st.write(f"**Source:** {c['master_source']}  |  **ID:** `{c['master_id']}`")
+                if c["matches"]:
+                    for src, m in c["matches"].items():
+                        st.write(f"- {src}: {m['name']} ({m['score']}%)")
+                if c["gaps"]:
+                    st.write(f"**Gaps:** {', '.join(c['gaps'])}")
+    elif query:
+        st.warning("Run harmonization first to search.")
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-if __name__ == "__main__":
-    import uvicorn
-    host = os.getenv("HOST", "0.0.0.0")
-    port = int(os.getenv("PORT", "8000"))
-    uvicorn.run("main:app", host=host, port=port, reload=True)
+# ══════════════════════════════════════════════════════════════════════
+# TAB: Batch
+# ══════════════════════════════════════════════════════════════════════
+with tab_batch:
+    st.subheader("Batch Process")
+    st.caption("Enter one equipment name per line, or upload a CSV with a `name` column.")
+
+    batch_input = st.text_area("Equipment names", height=150, placeholder="Centrifugal Pump\nHeat Exchanger\nPressure Vessel")
+
+    batch_file = st.file_uploader("Or upload CSV", type=["csv"], key="batch_csv")
+
+    if st.button("Process Batch", type="primary"):
+        items = []
+        if batch_file:
+            bdf = pd.read_csv(batch_file)
+            col = "name" if "name" in bdf.columns else bdf.columns[0]
+            items = bdf[col].dropna().astype(str).tolist()
+        elif batch_input.strip():
+            items = [line.strip() for line in batch_input.strip().split("\n") if line.strip()]
+
+        if not items:
+            st.warning("Enter at least one item.")
+        elif not st.session_state.classes:
+            st.error("Run harmonization first.")
+        else:
+            names = [c["master_name"] for c in st.session_state.classes]
+            results = []
+            for item in items:
+                match = process.extractOne(item, names, scorer=fuzz.token_sort_ratio)
+                if match:
+                    name, score, idx = match
+                    c = st.session_state.classes[idx]
+                    results.append({
+                        "Input": item,
+                        "Best Match": name,
+                        "Score": round(score, 1),
+                        "Master Source": c["master_source"],
+                        "Gaps": ", ".join(c["gaps"]),
+                    })
+                else:
+                    results.append({"Input": item, "Best Match": "—", "Score": 0, "Master Source": "—", "Gaps": "—"})
+
+            result_df = pd.DataFrame(results)
+            st.dataframe(result_df, use_container_width=True, hide_index=True)
+
+            csv_out = result_df.to_csv(index=False).encode()
+            st.download_button("Download batch results", data=csv_out, file_name="batch_results.csv", mime="text/csv")
+
+
+# ══════════════════════════════════════════════════════════════════════
+# TAB: Logs
+# ══════════════════════════════════════════════════════════════════════
+with tab_logs:
+    st.subheader("System Logs")
+    if st.session_state.logs:
+        log_text = "\n".join(reversed(st.session_state.logs))
+        st.code(log_text, language="log")
+    else:
+        st.info("No logs yet.")
+
+# ── Footer ────────────────────────────────────────────────────────────
+st.divider()
+st.caption("Built by KBR AMCDE Team — RDL Data Harmonizer v2.0")
