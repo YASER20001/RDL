@@ -1,5 +1,5 @@
 """
-KBR RDL Data Harmonizer v2.0 — Streamlit App
+KBR RDL Data Harmonizer v3.0 — Streamlit App
 Run:  streamlit run main.py
 """
 
@@ -8,6 +8,7 @@ import io
 import re
 import pandas as pd
 import streamlit as st
+import altair as alt
 from rapidfuzz import fuzz, process
 
 # ──────────────────────────────────────────────────────────────────────
@@ -18,6 +19,303 @@ st.set_page_config(
     page_icon="⚙️",
     layout="wide",
 )
+
+# ──────────────────────────────────────────────────────────────────────
+# Global CSS — KBR Professional Theme
+# ──────────────────────────────────────────────────────────────────────
+st.markdown("""
+<style>
+/* ── Import font ── */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+/* ── Root variables ── */
+:root {
+    --kbr-red: #b91c1c;
+    --kbr-red-dark: #7f1d1d;
+    --kbr-red-light: #fecaca;
+    --kbr-navy: #1e293b;
+    --kbr-blue: #2563eb;
+    --kbr-green: #059669;
+    --kbr-orange: #d97706;
+    --kbr-purple: #7c3aed;
+    --kbr-gray: #64748b;
+    --card-bg: #ffffff;
+    --card-border: #e2e8f0;
+    --card-shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.06);
+    --card-shadow-hover: 0 4px 12px rgba(0,0,0,0.12);
+    --radius: 12px;
+}
+
+/* ── Global font ── */
+html, body, [class*="css"] {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif !important;
+}
+
+/* ── Hide default Streamlit branding ── */
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+header {visibility: hidden;}
+
+/* ── Main container padding ── */
+.block-container {
+    padding-top: 1rem !important;
+    padding-bottom: 2rem !important;
+    max-width: 1400px;
+}
+
+/* ── Tab styling ── */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 0;
+    background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+    border-radius: 12px 12px 0 0;
+    padding: 4px 4px 0 4px;
+    border-bottom: 2px solid var(--kbr-red);
+}
+.stTabs [data-baseweb="tab"] {
+    font-weight: 500;
+    font-size: 0.85rem;
+    color: var(--kbr-gray);
+    padding: 0.6rem 1.2rem;
+    border-radius: 8px 8px 0 0;
+    transition: all 0.2s ease;
+}
+.stTabs [aria-selected="true"] {
+    background: white !important;
+    color: var(--kbr-red) !important;
+    font-weight: 700;
+    border-top: 3px solid var(--kbr-red);
+}
+.stTabs [data-baseweb="tab"]:hover {
+    color: var(--kbr-red);
+    background: rgba(185, 28, 28, 0.05);
+}
+.stTabs [data-baseweb="tab-panel"] {
+    padding: 1.5rem 0.5rem;
+}
+
+/* ── Metric card override ── */
+[data-testid="stMetric"] {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-left: 4px solid var(--kbr-red);
+    border-radius: var(--radius);
+    padding: 1rem 1.2rem;
+    box-shadow: var(--card-shadow);
+    transition: all 0.2s ease;
+}
+[data-testid="stMetric"]:hover {
+    box-shadow: var(--card-shadow-hover);
+    transform: translateY(-1px);
+}
+[data-testid="stMetric"] label {
+    font-size: 0.75rem !important;
+    font-weight: 600 !important;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--kbr-gray) !important;
+}
+[data-testid="stMetric"] [data-testid="stMetricValue"] {
+    font-size: 1.6rem !important;
+    font-weight: 800 !important;
+    color: var(--kbr-navy) !important;
+}
+
+/* ── Buttons ── */
+.stButton > button[kind="primary"] {
+    background: linear-gradient(135deg, var(--kbr-red) 0%, var(--kbr-red-dark) 100%) !important;
+    border: none !important;
+    font-weight: 600 !important;
+    letter-spacing: 0.02em;
+    padding: 0.6rem 1.5rem !important;
+    border-radius: 8px !important;
+    box-shadow: 0 2px 8px rgba(185, 28, 28, 0.3) !important;
+    transition: all 0.2s ease !important;
+}
+.stButton > button[kind="primary"]:hover {
+    box-shadow: 0 4px 16px rgba(185, 28, 28, 0.4) !important;
+    transform: translateY(-1px);
+}
+.stButton > button[kind="secondary"], .stButton > button:not([kind]) {
+    border: 1.5px solid var(--card-border) !important;
+    border-radius: 8px !important;
+    font-weight: 500 !important;
+    transition: all 0.2s ease !important;
+}
+.stButton > button[kind="secondary"]:hover, .stButton > button:not([kind]):hover {
+    border-color: var(--kbr-red) !important;
+    color: var(--kbr-red) !important;
+}
+
+/* ── Download button ── */
+.stDownloadButton > button {
+    background: linear-gradient(135deg, var(--kbr-green) 0%, #047857 100%) !important;
+    color: white !important;
+    border: none !important;
+    font-weight: 600 !important;
+    border-radius: 8px !important;
+    box-shadow: 0 2px 8px rgba(5, 150, 105, 0.3) !important;
+}
+.stDownloadButton > button:hover {
+    box-shadow: 0 4px 16px rgba(5, 150, 105, 0.4) !important;
+}
+
+/* ── Expander ── */
+.streamlit-expanderHeader {
+    font-weight: 600 !important;
+    font-size: 0.95rem !important;
+    border-radius: 8px !important;
+    background: #f8fafc !important;
+}
+
+/* ── Dataframes ── */
+[data-testid="stDataFrame"] {
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius);
+    overflow: hidden;
+}
+
+/* ── File uploader ── */
+[data-testid="stFileUploader"] {
+    border: 2px dashed var(--card-border);
+    border-radius: var(--radius);
+    padding: 0.5rem;
+    transition: border-color 0.2s ease;
+}
+[data-testid="stFileUploader"]:hover {
+    border-color: var(--kbr-red);
+}
+
+/* ── Selectbox / multiselect ── */
+.stSelectbox > div > div, .stMultiSelect > div > div {
+    border-radius: 8px !important;
+}
+
+/* ── Slider ── */
+.stSlider > div > div > div > div {
+    background: var(--kbr-red) !important;
+}
+
+/* ── Dividers ── */
+hr {
+    border: none;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--card-border), transparent);
+    margin: 1.5rem 0;
+}
+
+/* ── Section card helper ── */
+.section-card {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius);
+    padding: 1.5rem;
+    box-shadow: var(--card-shadow);
+    margin-bottom: 1rem;
+}
+.section-card h3 {
+    margin-top: 0;
+    color: var(--kbr-navy);
+    font-weight: 700;
+    font-size: 1.1rem;
+}
+
+/* ── Stat pill ── */
+.stat-pill {
+    display: inline-block;
+    padding: 0.25rem 0.75rem;
+    border-radius: 20px;
+    font-size: 0.8rem;
+    font-weight: 600;
+}
+.stat-pill.green { background: #d1fae5; color: #065f46; }
+.stat-pill.red { background: #fee2e2; color: #991b1b; }
+.stat-pill.blue { background: #dbeafe; color: #1e40af; }
+.stat-pill.orange { background: #ffedd5; color: #9a3412; }
+.stat-pill.purple { background: #ede9fe; color: #5b21b6; }
+
+/* ── KPI row ── */
+.kpi-row {
+    display: flex; gap: 1rem; flex-wrap: wrap; margin: 1rem 0;
+}
+.kpi-card {
+    flex: 1; min-width: 160px;
+    background: white;
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius);
+    padding: 1.2rem;
+    text-align: center;
+    box-shadow: var(--card-shadow);
+    transition: all 0.2s ease;
+}
+.kpi-card:hover {
+    box-shadow: var(--card-shadow-hover);
+    transform: translateY(-2px);
+}
+.kpi-card .kpi-value {
+    font-size: 2rem;
+    font-weight: 800;
+    line-height: 1.1;
+}
+.kpi-card .kpi-label {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--kbr-gray);
+    margin-top: 0.3rem;
+}
+.kpi-card .kpi-sub {
+    font-size: 0.8rem;
+    color: var(--kbr-gray);
+    margin-top: 0.2rem;
+}
+
+/* ── Chart container ── */
+.chart-container {
+    background: white;
+    border: 1px solid var(--card-border);
+    border-radius: var(--radius);
+    padding: 1rem 1.5rem;
+    box-shadow: var(--card-shadow);
+    margin: 0.75rem 0;
+}
+.chart-container h4 {
+    margin: 0 0 0.75rem 0;
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: var(--kbr-navy);
+}
+
+/* ── Status badge ── */
+.status-badge {
+    display: inline-flex; align-items: center; gap: 0.35rem;
+    padding: 0.2rem 0.7rem;
+    border-radius: 6px;
+    font-size: 0.78rem;
+    font-weight: 600;
+}
+.status-badge.match { background: #d1fae5; color: #065f46; }
+.status-badge.gap { background: #fee2e2; color: #991b1b; }
+.status-badge.partial { background: #ffedd5; color: #9a3412; }
+
+/* ── Empty state ── */
+.empty-state {
+    text-align: center;
+    padding: 4rem 2rem;
+    color: var(--kbr-gray);
+}
+.empty-state .empty-icon {
+    font-size: 3rem;
+    margin-bottom: 1rem;
+    opacity: 0.5;
+}
+.empty-state h3 {
+    color: var(--kbr-navy);
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+}
+</style>
+""", unsafe_allow_html=True)
 
 # ──────────────────────────────────────────────────────────────────────
 # Session state defaults
@@ -804,10 +1102,44 @@ def build_overview_graph(classes, max_rows=20):
 # ══════════════════════════════════════════════════════════════════════
 # UI
 # ══════════════════════════════════════════════════════════════════════
+
+# ── Header ──
 st.markdown("""
-<div style="background: linear-gradient(90deg, #b91c1c, #7f1d1d); padding: 1.5rem 2rem; border-radius: 0.75rem; margin-bottom: 1rem;">
-    <h1 style="color: white; margin: 0; font-size: 1.8rem;">KBR RDL Data Harmonizer</h1>
-    <p style="color: #fca5a5; margin: 0; font-size: 0.9rem;">Equipment Class Harmonization v2.0</p>
+<div style="background: linear-gradient(135deg, #b91c1c 0%, #7f1d1d 50%, #1e293b 100%);
+            padding: 1.8rem 2.5rem; border-radius: 16px; margin-bottom: 1.5rem;
+            box-shadow: 0 8px 32px rgba(127,29,29,0.3); position: relative; overflow: hidden;">
+    <div style="position: absolute; top: -20px; right: -20px; width: 200px; height: 200px;
+                background: radial-gradient(circle, rgba(255,255,255,0.08) 0%, transparent 70%);
+                border-radius: 50%;"></div>
+    <div style="position: absolute; bottom: -30px; left: 30%; width: 150px; height: 150px;
+                background: radial-gradient(circle, rgba(255,255,255,0.05) 0%, transparent 70%);
+                border-radius: 50%;"></div>
+    <div style="display: flex; align-items: center; justify-content: space-between; position: relative; z-index: 1;">
+        <div>
+            <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.3rem;">
+                <div style="background: rgba(255,255,255,0.15); padding: 0.5rem 0.75rem; border-radius: 10px;
+                            backdrop-filter: blur(10px); font-size: 1.5rem;">&#9881;</div>
+                <h1 style="color: white; margin: 0; font-size: 1.9rem; font-weight: 800;
+                           letter-spacing: -0.02em; font-family: 'Inter', sans-serif;">
+                    KBR RDL Data Harmonizer
+                </h1>
+            </div>
+            <p style="color: rgba(252,165,165,0.9); margin: 0; font-size: 0.88rem; font-weight: 400;
+                      letter-spacing: 0.02em; padding-left: 3.5rem;">
+                Equipment Class Harmonization &amp; Gap Analysis Platform
+            </p>
+        </div>
+        <div style="text-align: right;">
+            <div style="background: rgba(255,255,255,0.12); padding: 0.35rem 1rem; border-radius: 20px;
+                        backdrop-filter: blur(10px); margin-bottom: 0.4rem;">
+                <span style="color: #fca5a5; font-size: 0.75rem; font-weight: 600;
+                             letter-spacing: 0.08em; text-transform: uppercase;">Version 3.0</span>
+            </div>
+            <p style="color: rgba(255,255,255,0.5); font-size: 0.72rem; margin: 0;">
+                Built by KBR AMCDE Team
+            </p>
+        </div>
+    </div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -826,51 +1158,68 @@ tab_upload, tab_dashboard, tab_gaps, tab_attrs, tab_visual, tab_search, tab_batc
 # TAB: Upload & Configure
 # ══════════════════════════════════════════════════════════════════════
 with tab_upload:
-    st.subheader("Step 1 — Choose Master File(s)")
-    st.caption(
-        "Select **1 or 2** file types as the master reference. "
-        "They are treated as **one combined object**. "
-        "All other uploaded files are compared against this master."
-    )
+    # Step 1
+    st.markdown("""
+    <div class="section-card">
+        <h3>&#9312; Choose Master File(s)</h3>
+        <p style="color: var(--kbr-gray); font-size: 0.85rem; margin: 0;">
+            Select <strong>1 or 2</strong> file types as the master reference. They are treated as
+            <strong>one combined object</strong>. All other uploaded files are compared against this master.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
 
-    master_options = list(FILE_TYPES.keys())
-    selected_masters = st.multiselect(
-        "Master file(s)",
-        options=master_options,
-        default=st.session_state.masters or [],
-        format_func=lambda k: FILE_TYPES[k],
-        max_selections=2,
-    )
-    if selected_masters != st.session_state.masters:
-        st.session_state.masters = selected_masters
-
-    if len(selected_masters) == 0:
-        st.warning("Select at least one master.")
-    elif len(selected_masters) == 1:
-        st.info(f"**Master**: {FILE_TYPES[selected_masters[0]]}")
-    else:
-        st.info(
-            f"**Combined Master**: {FILE_TYPES[selected_masters[0]]} + "
-            f"{FILE_TYPES[selected_masters[1]]}"
+    cfg_left, cfg_right = st.columns([2, 1])
+    with cfg_left:
+        master_options = list(FILE_TYPES.keys())
+        selected_masters = st.multiselect(
+            "Master file(s)",
+            options=master_options,
+            default=st.session_state.masters or [],
+            format_func=lambda k: FILE_TYPES[k],
+            max_selections=2,
         )
+        if selected_masters != st.session_state.masters:
+            st.session_state.masters = selected_masters
 
-    st.divider()
-    threshold = st.slider(
-        "Match Threshold (%)", min_value=50, max_value=100,
-        value=st.session_state.match_threshold,
-        help="Minimum score to count as a match. Below this = GAP.",
-    )
-    if threshold != st.session_state.match_threshold:
-        st.session_state.match_threshold = threshold
+        if len(selected_masters) == 0:
+            st.warning("Select at least one master.")
+        elif len(selected_masters) == 1:
+            st.info(f"**Master**: {FILE_TYPES[selected_masters[0]]}")
+        else:
+            st.info(
+                f"**Combined Master**: {FILE_TYPES[selected_masters[0]]} + "
+                f"{FILE_TYPES[selected_masters[1]]}"
+            )
+    with cfg_right:
+        threshold = st.slider(
+            "Match Threshold (%)", min_value=50, max_value=100,
+            value=st.session_state.match_threshold,
+            help="Minimum fuzzy match score to count as a match. Below this = GAP.",
+        )
+        if threshold != st.session_state.match_threshold:
+            st.session_state.match_threshold = threshold
 
-    st.divider()
-    st.subheader("Step 2 — Upload Data Files")
+    st.markdown("")
+
+    # Step 2
+    st.markdown("""
+    <div class="section-card">
+        <h3>&#9313; Upload Data Files</h3>
+        <p style="color: var(--kbr-gray); font-size: 0.85rem; margin: 0;">
+            Upload Excel files for each data source. Supported formats: <code>.xlsx</code>, <code>.xls</code>, <code>.csv</code>
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
     cols = st.columns(3)
     for i, (key, label) in enumerate(FILE_TYPES.items()):
         with cols[i % 3]:
             is_master = key in st.session_state.masters
-            badge = " MASTER" if is_master else ""
-            uploaded = st.file_uploader(f"{label}{badge}", type=["xlsx", "xls", "csv"], key=f"upload_{key}")
+            badge = " (MASTER)" if is_master else ""
+            color = SOURCE_COLORS.get(key, "#6b7280")
+            st.markdown(f'<p style="font-weight:600;font-size:0.85rem;color:{color};margin-bottom:0.2rem;">{label}{badge}</p>', unsafe_allow_html=True)
+            uploaded = st.file_uploader(f"Upload {label}", type=["xlsx", "xls", "csv"], key=f"upload_{key}", label_visibility="collapsed")
             if uploaded is not None:
                 if key not in st.session_state.files or st.session_state.files[key]["filename"] != uploaded.name:
                     try:
@@ -878,7 +1227,6 @@ with tab_upload:
                         st.session_state.files[key] = {"filename": uploaded.name, "records": records}
                         add_log(f"Uploaded {key}: {uploaded.name} ({len(records)} records)")
                         st.success(f"{len(records)} records loaded")
-                        # Also read attribute sheets if available
                         if key == "aramco":
                             uploaded.seek(0)
                             attr_df = read_aramco_attributes(uploaded)
@@ -896,10 +1244,17 @@ with tab_upload:
                 else:
                     st.success(f"{len(st.session_state.files[key]['records'])} records loaded")
             if key in st.session_state.files:
-                st.caption(f"File: {st.session_state.files[key]['filename']}")
+                st.caption(f"_{st.session_state.files[key]['filename']}_")
 
-    st.divider()
-    st.subheader("Step 3 — Run")
+    st.markdown("")
+
+    # Step 3
+    st.markdown("""
+    <div class="section-card">
+        <h3>&#9314; Run Harmonization</h3>
+    </div>
+    """, unsafe_allow_html=True)
+
     col1, col2, col3 = st.columns(3)
     with col1:
         if st.button("Run Harmonization", type="primary", use_container_width=True):
@@ -908,7 +1263,8 @@ with tab_upload:
             elif not all(m in st.session_state.files for m in st.session_state.masters):
                 st.error("Upload all master files first.")
             else:
-                st.session_state.classes = run_harmonization()
+                with st.spinner("Running harmonization engine..."):
+                    st.session_state.classes = run_harmonization()
                 st.rerun()
     with col2:
         if st.button("Load Demo Data", use_container_width=True):
@@ -920,19 +1276,31 @@ with tab_upload:
     with col3:
         if st.session_state.classes:
             st.download_button(
-                "Export Excel", data=build_excel_bytes(st.session_state.classes),
+                "Export Full Report", data=build_excel_bytes(st.session_state.classes),
                 file_name="harmonization_export.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True,
             )
 
+    # Source status cards
     if st.session_state.files:
-        st.divider()
-        status_cols = st.columns(len(st.session_state.files))
-        for i, (k, v) in enumerate(st.session_state.files.items()):
-            with status_cols[i]:
-                tag = "MASTER " if k in st.session_state.masters else ""
-                st.metric(f"{tag}{FILE_TYPES[k]}", f"{len(v['records'])} records")
+        st.markdown("")
+        file_keys = list(st.session_state.files.keys())
+        cards_html = '<div class="kpi-row">'
+        for k in file_keys:
+            v = st.session_state.files[k]
+            color = SOURCE_COLORS.get(k, "#6b7280")
+            tag = "MASTER" if k in st.session_state.masters else ""
+            badge_html = f'<span class="stat-pill red" style="font-size:0.65rem;">{tag}</span> ' if tag else ""
+            cards_html += f'''
+            <div class="kpi-card" style="border-top: 3px solid {color};">
+                <div>{badge_html}</div>
+                <div class="kpi-value" style="color: {color};">{len(v["records"])}</div>
+                <div class="kpi-label">{FILE_TYPES[k]}</div>
+                <div class="kpi-sub">{v["filename"]}</div>
+            </div>'''
+        cards_html += '</div>'
+        st.markdown(cards_html, unsafe_allow_html=True)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -941,7 +1309,13 @@ with tab_upload:
 with tab_dashboard:
     classes = st.session_state.classes
     if not classes:
-        st.info("No results yet. Go to **Upload & Configure**.")
+        st.markdown("""
+        <div class="empty-state">
+            <div class="empty-icon">&#128202;</div>
+            <h3>No Results Yet</h3>
+            <p>Go to <strong>Upload &amp; Configure</strong> tab to load data and run harmonization.</p>
+        </div>
+        """, unsafe_allow_html=True)
     else:
         masters = st.session_state.masters
         total = len(classes)
@@ -961,26 +1335,160 @@ with tab_dashboard:
             source_stats[src] = {"matched": matched, "gaps": gaps}
 
         no_gaps_total = sum(1 for c in classes if not c["gaps"])
-
-        # Metrics
-        mc = st.columns(2 + len(non_master_keys))
-        with mc[0]:
-            st.metric("Total Classes", total)
-        with mc[1]:
-            st.metric("No Gaps", f"{no_gaps_total}/{total}")
-        for i, src in enumerate(non_master_keys):
-            with mc[2 + i]:
-                s = source_stats[src]
-                pct = int(round(s["matched"] / total * 100))
-                st.metric(FILE_TYPES.get(src, src), f"{pct}% match ({s['gaps']} gaps)")
+        has_gaps_total = total - no_gaps_total
 
         master_label = " + ".join(FILE_TYPES.get(m, m) for m in masters)
         compared_label = ", ".join(FILE_TYPES.get(s, s) for s in non_master_keys)
-        st.caption(f"**Master:** {master_label}  |  **Compared against:** {compared_label}  |  **Threshold:** {st.session_state.match_threshold}%")
+
+        # ── Context bar ──
+        st.markdown(f"""
+        <div style="background: linear-gradient(90deg, #f8fafc, #f1f5f9); border: 1px solid #e2e8f0;
+                    border-radius: 10px; padding: 0.75rem 1.5rem; margin-bottom: 1rem;
+                    display: flex; gap: 2rem; flex-wrap: wrap; align-items: center;">
+            <span style="font-size: 0.82rem; color: #64748b;">
+                <strong style="color: #1e293b;">Master:</strong> {master_label}
+            </span>
+            <span style="font-size: 0.82rem; color: #64748b;">
+                <strong style="color: #1e293b;">Compared Against:</strong> {compared_label}
+            </span>
+            <span style="font-size: 0.82rem; color: #64748b;">
+                <strong style="color: #1e293b;">Threshold:</strong> {st.session_state.match_threshold}%
+            </span>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # ── KPI cards row ──
+        overall_pct = int(round(no_gaps_total / total * 100)) if total else 0
+        kpi_html = '<div class="kpi-row">'
+        kpi_html += f'''
+        <div class="kpi-card" style="border-top: 3px solid var(--kbr-navy);">
+            <div class="kpi-value" style="color: var(--kbr-navy);">{total}</div>
+            <div class="kpi-label">Total Classes</div>
+        </div>
+        <div class="kpi-card" style="border-top: 3px solid var(--kbr-green);">
+            <div class="kpi-value" style="color: var(--kbr-green);">{no_gaps_total}</div>
+            <div class="kpi-label">Fully Matched</div>
+            <div class="kpi-sub">{overall_pct}% coverage</div>
+        </div>
+        <div class="kpi-card" style="border-top: 3px solid var(--kbr-red);">
+            <div class="kpi-value" style="color: var(--kbr-red);">{has_gaps_total}</div>
+            <div class="kpi-label">Has Gaps</div>
+        </div>'''
+        for src in non_master_keys:
+            s = source_stats[src]
+            pct = int(round(s["matched"] / total * 100))
+            color = SOURCE_COLORS.get(src, "#6b7280")
+            kpi_html += f'''
+            <div class="kpi-card" style="border-top: 3px solid {color};">
+                <div class="kpi-value" style="color: {color};">{pct}%</div>
+                <div class="kpi-label">{FILE_TYPES.get(src, src)}</div>
+                <div class="kpi-sub">{s["matched"]}/{total} matched &middot; {s["gaps"]} gaps</div>
+            </div>'''
+        kpi_html += '</div>'
+        st.markdown(kpi_html, unsafe_allow_html=True)
+
+        # ── Charts row ──
+        chart_col1, chart_col2 = st.columns(2)
+
+        with chart_col1:
+            st.markdown('<div class="chart-container"><h4>Coverage Overview</h4></div>', unsafe_allow_html=True)
+            donut_data = pd.DataFrame({
+                "Status": ["Fully Matched", "Has Gaps"],
+                "Count": [no_gaps_total, has_gaps_total],
+                "Color": ["#059669", "#b91c1c"],
+            })
+            donut = alt.Chart(donut_data).mark_arc(innerRadius=60, outerRadius=100, cornerRadius=4).encode(
+                theta=alt.Theta("Count:Q"),
+                color=alt.Color("Status:N", scale=alt.Scale(
+                    domain=["Fully Matched", "Has Gaps"],
+                    range=["#059669", "#b91c1c"],
+                ), legend=alt.Legend(orient="bottom", title=None, labelFontSize=12, symbolSize=120)),
+                tooltip=["Status:N", "Count:Q"],
+            ).properties(height=280)
+            center_text = alt.Chart(pd.DataFrame({"text": [f"{overall_pct}%"]})).mark_text(
+                size=28, fontWeight="bold", color="#1e293b", font="Inter",
+            ).encode(text="text:N")
+            st.altair_chart(donut + center_text, use_container_width=True)
+
+        with chart_col2:
+            st.markdown('<div class="chart-container"><h4>Match Rate by Source</h4></div>', unsafe_allow_html=True)
+            bar_data = pd.DataFrame([
+                {
+                    "Source": FILE_TYPES.get(src, src),
+                    "Matched": int(round(source_stats[src]["matched"] / total * 100)),
+                    "Gaps": int(round(source_stats[src]["gaps"] / total * 100)),
+                }
+                for src in non_master_keys
+            ])
+            bar_melted = bar_data.melt(id_vars=["Source"], var_name="Type", value_name="Percent")
+            bar_chart = alt.Chart(bar_melted).mark_bar(cornerRadiusTopLeft=6, cornerRadiusTopRight=6).encode(
+                x=alt.X("Source:N", axis=alt.Axis(labelAngle=0, labelFontSize=12, title=None)),
+                y=alt.Y("Percent:Q", axis=alt.Axis(title="Percentage", labelFontSize=11), scale=alt.Scale(domain=[0, 100])),
+                color=alt.Color("Type:N", scale=alt.Scale(
+                    domain=["Matched", "Gaps"],
+                    range=["#059669", "#ef4444"],
+                ), legend=alt.Legend(orient="bottom", title=None, labelFontSize=12, symbolSize=120)),
+                tooltip=["Source:N", "Type:N", "Percent:Q"],
+            ).properties(height=260)
+            st.altair_chart(bar_chart, use_container_width=True)
+
+        # ── Score distribution chart ──
+        all_scores = []
+        for c in classes:
+            for src, m in c["matches"].items():
+                all_scores.append({"Score": m["score"], "Source": FILE_TYPES.get(src, src)})
+        if all_scores:
+            st.markdown('<div class="chart-container"><h4>Match Score Distribution</h4></div>', unsafe_allow_html=True)
+            score_df = pd.DataFrame(all_scores)
+            hist = alt.Chart(score_df).mark_bar(
+                cornerRadiusTopLeft=4, cornerRadiusTopRight=4, opacity=0.85,
+            ).encode(
+                x=alt.X("Score:Q", bin=alt.Bin(step=5), axis=alt.Axis(title="Match Score %", labelFontSize=11)),
+                y=alt.Y("count()", axis=alt.Axis(title="Count", labelFontSize=11)),
+                color=alt.Color("Source:N", scale=alt.Scale(
+                    domain=[FILE_TYPES.get(s, s) for s in non_master_keys],
+                    range=[SOURCE_COLORS.get(s, "#6b7280") for s in non_master_keys],
+                ), legend=alt.Legend(orient="bottom", title=None, labelFontSize=11, symbolSize=120)),
+                tooltip=["Source:N", "count()"],
+            ).properties(height=220)
+            st.altair_chart(hist, use_container_width=True)
+
+        # ── Match quality breakdown ──
+        exact_cnt = sum(1 for c in classes for m in c["matches"].values() if m["score"] >= 95)
+        strong_cnt = sum(1 for c in classes for m in c["matches"].values() if 85 <= m["score"] < 95)
+        partial_cnt = sum(1 for c in classes for m in c["matches"].values() if 75 <= m["score"] < 85)
+        weak_cnt = sum(1 for c in classes for m in c["matches"].values() if m["score"] < 75)
+        total_matches = exact_cnt + strong_cnt + partial_cnt + weak_cnt
+
+        st.markdown(f"""
+        <div class="section-card">
+            <h3>Match Quality Breakdown</h3>
+            <div style="display:flex; gap:1rem; flex-wrap:wrap; margin-top:0.75rem;">
+                <div style="flex:1; min-width: 140px; text-align:center; padding:0.75rem; background:#d1fae5; border-radius:10px;">
+                    <div style="font-size:1.5rem; font-weight:800; color:#065f46;">{exact_cnt}</div>
+                    <div style="font-size:0.78rem; font-weight:600; color:#065f46;">Exact (95%+)</div>
+                </div>
+                <div style="flex:1; min-width: 140px; text-align:center; padding:0.75rem; background:#dbeafe; border-radius:10px;">
+                    <div style="font-size:1.5rem; font-weight:800; color:#1e40af;">{strong_cnt}</div>
+                    <div style="font-size:0.78rem; font-weight:600; color:#1e40af;">Strong (85-94%)</div>
+                </div>
+                <div style="flex:1; min-width: 140px; text-align:center; padding:0.75rem; background:#ffedd5; border-radius:10px;">
+                    <div style="font-size:1.5rem; font-weight:800; color:#9a3412;">{partial_cnt}</div>
+                    <div style="font-size:0.78rem; font-weight:600; color:#9a3412;">Partial (75-84%)</div>
+                </div>
+                <div style="flex:1; min-width: 140px; text-align:center; padding:0.75rem; background:#fee2e2; border-radius:10px;">
+                    <div style="font-size:1.5rem; font-weight:800; color:#991b1b;">{weak_cnt}</div>
+                    <div style="font-size:0.78rem; font-weight:600; color:#991b1b;">Weak (&lt;75%)</div>
+                </div>
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
         st.divider()
 
-        # Filter
-        filter_opt = st.radio("Show", ["All", "No Gaps only", "Has Gaps only"], horizontal=True)
+        # ── Class detail browser ──
+        st.markdown("### Class Detail Browser")
+        filter_opt = st.radio("Filter", ["All", "No Gaps only", "Has Gaps only"], horizontal=True, key="dash_filter")
 
         for c in classes:
             has_gaps = bool(c["gaps"])
@@ -989,37 +1497,39 @@ with tab_dashboard:
             if filter_opt == "Has Gaps only" and not has_gaps:
                 continue
 
-            # Header
-            gap_label = ":red[GAP IN: " + ", ".join(FILE_TYPES.get(g, g) for g in c["gaps"]) + "]" if has_gaps else ":green[No Gaps]"
+            if has_gaps:
+                gap_label = ":red[GAP IN: " + ", ".join(FILE_TYPES.get(g, g) for g in c["gaps"]) + "]"
+            else:
+                gap_label = ":green[No Gaps]"
 
             with st.expander(f"**{c['index']}. {c['canonical_name']}** — {gap_label}"):
-                # Master reference
-                st.markdown("**Master Reference:**")
-                for m in masters:
-                    me = c["master_entries"].get(m)
-                    if me:
-                        st.markdown(f"- {FILE_TYPES[m]}: **{me['name']}** (`{me['id']}`)")
-                    else:
-                        st.markdown(f"- {FILE_TYPES[m]}: :red[not in this master]")
+                detail_left, detail_right = st.columns(2)
+                with detail_left:
+                    st.markdown("**Master Reference:**")
+                    for m in masters:
+                        me = c["master_entries"].get(m)
+                        if me:
+                            st.markdown(f"- {FILE_TYPES[m]}: **{me['name']}** (`{me['id']}`)")
+                        else:
+                            st.markdown(f"- {FILE_TYPES[m]}: :red[not in this master]")
+                    if len(masters) == 2 and c.get("cross_score") is not None:
+                        st.caption(f"Masters cross-match: {c['cross_score']}%")
 
-                if len(masters) == 2 and c.get("cross_score") is not None:
-                    st.caption(f"Masters cross-match: {c['cross_score']}%")
-
-                # Per-source comparison
-                st.markdown("**Comparison Results:**")
-                for src in non_master_keys:
-                    match = c["matches"].get(src)
-                    label = FILE_TYPES.get(src, src)
-                    if match:
-                        status, _ = classify_match(match["score"])
-                        color = "green" if match["score"] >= 90 else "orange" if match["score"] >= 75 else "red"
-                        st.markdown(f"- :{color}[**{label}**]: {match['name']} (`{match['id']}`) — {match['score']}% {status}")
-                    else:
-                        st.markdown(f"- :red[**{label}**: GAP — not found]")
+                with detail_right:
+                    st.markdown("**Comparison Results:**")
+                    for src in non_master_keys:
+                        match = c["matches"].get(src)
+                        label = FILE_TYPES.get(src, src)
+                        if match:
+                            status, _ = classify_match(match["score"])
+                            color = "green" if match["score"] >= 90 else "orange" if match["score"] >= 75 else "red"
+                            st.markdown(f"- :{color}[**{label}**]: {match['name']} (`{match['id']}`) — {match['score']}% {status}")
+                        else:
+                            st.markdown(f"- :red[**{label}**: GAP — not found]")
 
         # Table
         st.divider()
-        st.subheader("Table View")
+        st.markdown("### Full Data Table")
         st.dataframe(build_export_df(classes), use_container_width=True, hide_index=True)
 
 
@@ -1029,7 +1539,13 @@ with tab_dashboard:
 with tab_gaps:
     classes = st.session_state.classes
     if not classes:
-        st.info("Run harmonization first.")
+        st.markdown("""
+        <div class="empty-state">
+            <div class="empty-icon">&#128269;</div>
+            <h3>No Gap Analysis Available</h3>
+            <p>Run harmonization first to see gap analysis results.</p>
+        </div>
+        """, unsafe_allow_html=True)
     else:
         masters = st.session_state.masters
         files = st.session_state.files
@@ -1045,18 +1561,44 @@ with tab_gaps:
                     "Action": f"Add to {FILE_TYPES.get(g, g)} or confirm exclusion",
                 })
 
-        st.subheader(f"Gap Analysis — {len(all_gaps)} gaps found")
+        st.markdown(f"""
+        <div class="section-card">
+            <h3>Gap Analysis &mdash; {len(all_gaps)} gaps identified</h3>
+            <p style="color: var(--kbr-gray); font-size: 0.85rem; margin: 0;">
+                Equipment classes found in the master reference but missing from one or more sources.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
 
         if not all_gaps:
-            st.success("No gaps! All sources are fully matched.")
+            st.success("No gaps! All sources are fully matched across all datasets.")
         else:
             gap_by_source = {}
             for g in all_gaps:
                 gap_by_source[g["Gap In"]] = gap_by_source.get(g["Gap In"], 0) + 1
 
-            gap_cols = st.columns(len(gap_by_source))
-            for i, (src, cnt) in enumerate(sorted(gap_by_source.items(), key=lambda x: -x[1])):
-                with gap_cols[i]:
+            # Gap chart + metrics
+            gap_chart_col, gap_metric_col = st.columns([2, 1])
+            with gap_chart_col:
+                gap_chart_data = pd.DataFrame([
+                    {"Source": src, "Gaps": cnt}
+                    for src, cnt in sorted(gap_by_source.items(), key=lambda x: -x[1])
+                ])
+                gap_bar = alt.Chart(gap_chart_data).mark_bar(
+                    cornerRadiusTopLeft=6, cornerRadiusTopRight=6, color="#ef4444",
+                ).encode(
+                    x=alt.X("Source:N", axis=alt.Axis(labelAngle=0, labelFontSize=12, title=None), sort="-y"),
+                    y=alt.Y("Gaps:Q", axis=alt.Axis(title="Gap Count", labelFontSize=11)),
+                    tooltip=["Source:N", "Gaps:Q"],
+                    color=alt.Color("Source:N", legend=None, scale=alt.Scale(
+                        domain=list(gap_by_source.keys()),
+                        range=["#ef4444", "#f97316", "#eab308", "#8b5cf6"][:len(gap_by_source)],
+                    )),
+                ).properties(height=220)
+                st.altair_chart(gap_bar, use_container_width=True)
+
+            with gap_metric_col:
+                for src, cnt in sorted(gap_by_source.items(), key=lambda x: -x[1]):
                     st.metric(src, f"{cnt} gaps")
 
             st.divider()
@@ -1065,7 +1607,7 @@ with tab_gaps:
             st.dataframe(pd.DataFrame(filtered), use_container_width=True, hide_index=True)
 
             st.divider()
-            st.subheader("Action Items")
+            st.markdown("### Action Items")
             for i, g in enumerate(filtered):
                 st.markdown(f"{i+1}. **{g['Equipment Class']}** — add to :red[**{g['Gap In']}**] (found in: {g['Found In']})")
 
@@ -1078,12 +1620,16 @@ with tab_gaps:
             total_extra = sum(len(recs) for recs in reverse_gaps.values())
             master_total = sum(len(files[m]["records"]) for m in masters if m in files)
 
-            st.subheader(f"Enrichment Suggestions — {total_extra} extra classes found")
-            st.markdown(
-                f"These classes exist in non-master sources but **not in your master** ({master_label}). "
-                f"Master currently has **{master_total}** classes. "
-                f"Review and select which ones to add."
-            )
+            st.markdown(f"""
+            <div class="section-card" style="border-left: 4px solid var(--kbr-blue);">
+                <h3 style="color: var(--kbr-blue);">Enrichment Suggestions &mdash; {total_extra} extra classes found</h3>
+                <p style="color: var(--kbr-gray); font-size: 0.85rem; margin: 0;">
+                    These classes exist in non-master sources but <strong>not in your master</strong> ({master_label}).
+                    Master currently has <strong>{master_total}</strong> classes.
+                    Review the suggestions below and download an enriched master file.
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
 
             # Metrics per source
             rev_cols = st.columns(len(reverse_gaps))
@@ -1184,12 +1730,23 @@ with tab_attrs:
     classes = st.session_state.classes
 
     if aramco_attrs is None and ltc_attrs is None:
-        st.info(
-            "No attribute data loaded yet. Upload **Aramco** (needs 'ISM Functional Class Attributes' sheet) "
-            "or **LTC** (needs 'ISM Physical Class Attributes' sheet) to see attributes."
-        )
+        st.markdown("""
+        <div class="empty-state">
+            <div class="empty-icon">&#128196;</div>
+            <h3>No Attribute Data</h3>
+            <p>Upload <strong>Aramco</strong> (needs &lsquo;ISM Functional Class Attributes&rsquo; sheet)
+            or <strong>LTC</strong> (needs &lsquo;ISM Physical Class Attributes&rsquo; sheet) to explore attributes.</p>
+        </div>
+        """, unsafe_allow_html=True)
     else:
-        st.subheader("Attributes Explorer")
+        st.markdown("""
+        <div class="section-card">
+            <h3>Attributes Explorer</h3>
+            <p style="color: var(--kbr-gray); font-size: 0.85rem; margin: 0;">
+                Browse, compare, and analyze equipment class attributes across data sources.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
 
         # Show counts
         attr_cols = st.columns(2)
@@ -1367,9 +1924,22 @@ with tab_attrs:
 with tab_visual:
     classes = st.session_state.classes
     if not classes:
-        st.info("Run harmonization first.")
+        st.markdown("""
+        <div class="empty-state">
+            <div class="empty-icon">&#128279;</div>
+            <h3>No Connection Data</h3>
+            <p>Run harmonization first to visualize connections between data sources.</p>
+        </div>
+        """, unsafe_allow_html=True)
     else:
-        st.subheader("Connection Map")
+        st.markdown("""
+        <div class="section-card">
+            <h3>Connection Map</h3>
+            <p style="color: var(--kbr-gray); font-size: 0.85rem; margin: 0;">
+                Visual representation of how equipment classes connect across data sources. Solid lines = matched, dashed red = gap.
+            </p>
+        </div>
+        """, unsafe_allow_html=True)
         view_mode = st.radio("View", ["Per-class detail", "Overview (first 20)"], horizontal=True)
         if view_mode == "Per-class detail":
             options = [f"{c['index']}. {c['canonical_name']}" for c in classes]
@@ -1388,7 +1958,14 @@ with tab_visual:
 # TAB: Search
 # ══════════════════════════════════════════════════════════════════════
 with tab_search:
-    st.subheader("Search Equipment Classes")
+    st.markdown("""
+    <div class="section-card">
+        <h3>Search Equipment Classes</h3>
+        <p style="color: var(--kbr-gray); font-size: 0.85rem; margin: 0;">
+            Type an equipment name to find the best match in the harmonized dataset.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
     query = st.text_input("Equipment name", placeholder="e.g. centrifugal pump...")
 
     if query and st.session_state.classes:
@@ -1428,7 +2005,14 @@ with tab_search:
 # TAB: Batch
 # ══════════════════════════════════════════════════════════════════════
 with tab_batch:
-    st.subheader("Batch Process")
+    st.markdown("""
+    <div class="section-card">
+        <h3>Batch Process</h3>
+        <p style="color: var(--kbr-gray); font-size: 0.85rem; margin: 0;">
+            Process multiple equipment names at once. Enter manually or upload a CSV file.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
     batch_input = st.text_area("Equipment names (one per line)", height=150)
     batch_file = st.file_uploader("Or upload CSV", type=["csv"], key="batch_csv")
 
@@ -1467,11 +2051,32 @@ with tab_batch:
 # TAB: Logs
 # ══════════════════════════════════════════════════════════════════════
 with tab_logs:
-    st.subheader("System Logs")
+    st.markdown("""
+    <div class="section-card">
+        <h3>System Logs</h3>
+        <p style="color: var(--kbr-gray); font-size: 0.85rem; margin: 0;">
+            Operational log of all harmonization activities.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
     if st.session_state.logs:
         st.code("\n".join(reversed(st.session_state.logs)), language="log")
     else:
         st.info("No logs yet.")
 
-st.divider()
-st.caption("Built by KBR AMCDE Team — RDL Data Harmonizer v2.0")
+# ── Footer ──
+st.markdown("""
+<div style="margin-top: 3rem; padding: 1.5rem 2rem; background: linear-gradient(90deg, #f8fafc, #f1f5f9);
+            border-top: 2px solid #e2e8f0; border-radius: 12px;">
+    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
+        <div>
+            <span style="font-weight: 700; color: #1e293b; font-size: 0.9rem;">KBR RDL Data Harmonizer</span>
+            <span style="color: #94a3b8; font-size: 0.82rem;"> &mdash; v3.0</span>
+        </div>
+        <div style="color: #94a3b8; font-size: 0.78rem;">
+            Built by <strong style="color: #b91c1c;">KBR AMCDE Team</strong> &bull;
+            Equipment Class Harmonization &amp; Gap Analysis Platform
+        </div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
