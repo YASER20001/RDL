@@ -30,6 +30,7 @@ DEFAULTS = {
     "match_threshold": 75,
     "aramco_attrs": None,
     "ltc_attrs": None,
+    "reverse_gaps": {},
 }
 for k, v in DEFAULTS.items():
     if k not in st.session_state:
@@ -405,6 +406,28 @@ def run_harmonization():
         harmonized.append(entry)
 
     add_log(f"Harmonization complete: {len(harmonized)} classes, compared against {list(non_masters.keys())}")
+
+    # Step 3: Compute reverse gaps — non-master records that matched nothing in the master
+    reverse_gaps = {}
+    for src, candidates in non_masters.items():
+        # Collect IDs of candidates that were matched by at least one master entry
+        matched_ids = set()
+        for entry in harmonized:
+            m = entry["matches"].get(src)
+            if m:
+                matched_ids.add((m["id"], m["name"]))
+        # Find candidates that were never matched
+        unmatched = []
+        for rec in candidates:
+            if (rec["id"], rec["name"]) not in matched_ids:
+                unmatched.append(rec)
+        if unmatched:
+            reverse_gaps[src] = unmatched
+    if reverse_gaps:
+        parts = [f"{FILE_TYPES.get(s, s)}: {len(recs)} extra" for s, recs in reverse_gaps.items()]
+        add_log(f"Reverse gaps (extra classes not in master): {', '.join(parts)}")
+    st.session_state.reverse_gaps = reverse_gaps
+
     return harmonized
 
 
@@ -441,6 +464,10 @@ def load_demo_data():
             {"id": "KBR-E01", "name": "Electric Motor Driver", "discipline": "Electrical", "source": "kbr"},
             {"id": "KBR-H02", "name": "Air Cooled Heat Exchanger", "discipline": "Mechanical", "source": "kbr"},
             {"id": "KBR-C01", "name": "Reciprocating Compressor", "discipline": "Mechanical", "source": "kbr"},
+            # Extra KBR classes not in Aramco (for enrichment suggestion demo)
+            {"id": "KBR-T01", "name": "Cooling Tower", "discipline": "Mechanical", "source": "kbr"},
+            {"id": "KBR-F01", "name": "Flare Stack", "discipline": "Process", "source": "kbr"},
+            {"id": "KBR-D01", "name": "Drum Separator", "discipline": "Process", "source": "kbr"},
         ],
         "ltc": [
             {"id": "LTC-001", "name": "Centrifugal Pump Unit", "source": "ltc"},
@@ -577,6 +604,70 @@ def build_excel_bytes(classes):
                 "Value": f"Matched: {cnt}/{total} ({pct}%) — Gaps: {gap_cnt}",
             })
         pd.DataFrame(summary_rows).to_excel(writer, sheet_name="Summary", index=False)
+
+        # Auto-fit columns
+        for sheet_name in writer.sheets:
+            ws = writer.sheets[sheet_name]
+            for col_cells in ws.columns:
+                max_len = max(len(str(cell.value or "")) for cell in col_cells)
+                ws.column_dimensions[col_cells[0].column_letter].width = min(max_len + 3, 50)
+
+    buf.seek(0)
+    return buf.getvalue()
+
+
+def build_enriched_master_excel(selected_additions):
+    """Build an Excel file containing the original master records + selected additions.
+
+    Parameters
+    ----------
+    selected_additions : list[dict]
+        Each dict has keys: id, name, source (original source key), plus any extra fields.
+
+    Returns bytes of the .xlsx file.
+    """
+    masters = st.session_state.masters
+    files = st.session_state.files
+    buf = io.BytesIO()
+
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        for m in masters:
+            if m not in files:
+                continue
+            original = files[m]["records"]
+            label = FILE_TYPES.get(m, m)
+
+            # Original records
+            orig_rows = []
+            for r in original:
+                orig_rows.append({
+                    "Id": r["id"],
+                    "Name": r["name"],
+                    "Status": "Original",
+                })
+
+            # Suggested additions
+            for rec in selected_additions:
+                orig_rows.append({
+                    "Id": f"NEW-{rec['id']}",
+                    "Name": rec["name"],
+                    "Status": f"Suggested from {FILE_TYPES.get(rec['source'], rec['source'])}",
+                })
+
+            df = pd.DataFrame(orig_rows)
+            df.to_excel(writer, sheet_name=f"{label} Enriched", index=False)
+
+        # Summary sheet
+        summary_rows = [
+            {"Metric": "Original Master", "Value": " + ".join(FILE_TYPES.get(m, m) for m in masters)},
+            {"Metric": "Original Classes", "Value": sum(len(files[m]["records"]) for m in masters if m in files)},
+            {"Metric": "Suggested Additions", "Value": len(selected_additions)},
+            {"Metric": "New Total", "Value": sum(len(files[m]["records"]) for m in masters if m in files) + len(selected_additions)},
+        ]
+        for src in set(r["source"] for r in selected_additions):
+            cnt = sum(1 for r in selected_additions if r["source"] == src)
+            summary_rows.append({"Metric": f"Added from {FILE_TYPES.get(src, src)}", "Value": cnt})
+        pd.DataFrame(summary_rows).to_excel(writer, sheet_name="Enrichment Summary", index=False)
 
         # Auto-fit columns
         for sheet_name in writer.sheets:
@@ -905,6 +996,7 @@ with tab_gaps:
         st.info("Run harmonization first.")
     else:
         masters = st.session_state.masters
+        files = st.session_state.files
         all_gaps = []
         for c in classes:
             for g in c["gaps"]:
@@ -940,6 +1032,106 @@ with tab_gaps:
             st.subheader("Action Items")
             for i, g in enumerate(filtered):
                 st.markdown(f"{i+1}. **{g['Equipment Class']}** — add to :red[**{g['Gap In']}**] (found in: {g['Found In']})")
+
+        # ── Enrichment Suggestions (reverse gaps) ──────────────────
+        st.divider()
+        reverse_gaps = st.session_state.get("reverse_gaps", {})
+        master_label = " + ".join(FILE_TYPES.get(m, m) for m in masters)
+
+        if reverse_gaps:
+            total_extra = sum(len(recs) for recs in reverse_gaps.values())
+            master_total = sum(len(files[m]["records"]) for m in masters if m in files)
+
+            st.subheader(f"Enrichment Suggestions — {total_extra} extra classes found")
+            st.markdown(
+                f"These classes exist in non-master sources but **not in your master** ({master_label}). "
+                f"Master currently has **{master_total}** classes. "
+                f"Review and select which ones to add."
+            )
+
+            # Metrics per source
+            rev_cols = st.columns(len(reverse_gaps))
+            for i, (src, recs) in enumerate(sorted(reverse_gaps.items())):
+                with rev_cols[i]:
+                    st.metric(f"Extra in {FILE_TYPES.get(src, src)}", len(recs))
+
+            st.divider()
+
+            # Preview table with checkboxes
+            # Build a combined preview list
+            preview_rows = []
+            for src, recs in sorted(reverse_gaps.items()):
+                for rec in recs:
+                    row = {
+                        "Source": FILE_TYPES.get(src, src),
+                        "ID": rec["id"],
+                        "Name": rec["name"],
+                        "_source_key": src,
+                    }
+                    if "discipline" in rec and rec["discipline"]:
+                        row["Discipline"] = rec["discipline"]
+                    preview_rows.append(row)
+
+            preview_df = pd.DataFrame(preview_rows)
+            display_cols = [c for c in ["Source", "ID", "Name", "Discipline"] if c in preview_df.columns]
+
+            # Source filter for enrichment
+            enrich_sources = sorted(reverse_gaps.keys())
+            enrich_filter = st.selectbox(
+                "Filter by source",
+                ["All"] + [FILE_TYPES.get(s, s) for s in enrich_sources],
+                key="enrich_filter",
+            )
+
+            if enrich_filter == "All":
+                filtered_preview = preview_df
+            else:
+                filtered_preview = preview_df[preview_df["Source"] == enrich_filter]
+
+            st.markdown("**Preview of suggested additions:**")
+            st.dataframe(
+                filtered_preview[display_cols].reset_index(drop=True),
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.caption(f"Showing {len(filtered_preview)} of {len(preview_df)} suggestions")
+
+            # Select all / download
+            st.divider()
+            st.markdown(
+                f"**Download enriched master** — your original {master_label} "
+                f"({master_total} classes) + the {len(filtered_preview)} suggested additions below."
+            )
+
+            # Build selected additions from filtered preview
+            selected_additions = []
+            for _, row in filtered_preview.iterrows():
+                selected_additions.append({
+                    "id": row["ID"],
+                    "name": row["Name"],
+                    "source": row["_source_key"],
+                })
+
+            if selected_additions:
+                enriched_bytes = build_enriched_master_excel(selected_additions)
+                st.download_button(
+                    f"Download Enriched {master_label} ({master_total + len(selected_additions)} classes)",
+                    data=enriched_bytes,
+                    file_name="enriched_master.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary",
+                    use_container_width=True,
+                )
+                st.caption(
+                    f"Original: {master_total} classes → "
+                    f"Enriched: {master_total + len(selected_additions)} classes "
+                    f"(+{len(selected_additions)} from suggestions)"
+                )
+        else:
+            st.subheader("Enrichment Suggestions")
+            st.success(
+                f"No extra classes found. All non-master records matched something in {master_label}."
+            )
 
 
 # ══════════════════════════════════════════════════════════════════════
