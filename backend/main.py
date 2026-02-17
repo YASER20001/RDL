@@ -851,65 +851,206 @@ def build_export_df(classes):
 
 
 def build_excel_bytes(classes):
-    buf = io.BytesIO()
+    """Build the main harmonization export with professional styling."""
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    import openpyxl
+
     masters = st.session_state.masters
 
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        # Sheet 1: Harmonization
-        df = build_export_df(classes)
-        df.to_excel(writer, sheet_name="Harmonization Results", index=False)
+    # Style constants
+    kbr_red = "B91C1C"
+    kbr_dark = "7F1D1D"
+    navy = "1E293B"
+    white = "FFFFFF"
+    light_gray = "F8FAFC"
+    border_gray = "E2E8F0"
+    green_bg = "D1FAE5"
+    green_fg = "065F46"
+    red_bg = "FEE2E2"
+    red_fg = "991B1B"
 
-        # Sheet 2: Gap Analysis
-        gap_rows = []
-        for c in classes:
-            for g in c["gaps"]:
-                present_in = [FILE_TYPES.get(m, m) for m in masters if m in c["master_entries"]]
-                present_in += [FILE_TYPES.get(s, s) for s in c["matches"]]
-                gap_rows.append({
-                    "#": c["index"],
-                    "Equipment Class": c["canonical_name"],
-                    "Found In": ", ".join(present_in),
-                    "Gap In": FILE_TYPES.get(g, g),
-                    "Action": f"Add '{c['canonical_name']}' to {FILE_TYPES.get(g, g)} or confirm exclusion",
-                })
-        gap_df = pd.DataFrame(gap_rows) if gap_rows else pd.DataFrame(
-            columns=["#", "Equipment Class", "Found In", "Gap In", "Action"]
-        )
-        gap_df.to_excel(writer, sheet_name="Gap Analysis", index=False)
+    thin_border = Border(
+        left=Side(style="thin", color=border_gray),
+        right=Side(style="thin", color=border_gray),
+        top=Side(style="thin", color=border_gray),
+        bottom=Side(style="thin", color=border_gray),
+    )
+    title_font = Font(name="Calibri", size=16, bold=True, color=white)
+    title_fill = PatternFill("solid", fgColor=kbr_red)
+    sub_font = Font(name="Calibri", size=10, color=white)
+    sub_fill = PatternFill("solid", fgColor=kbr_dark)
+    header_font = Font(name="Calibri", size=10, bold=True, color=white)
+    header_fill = PatternFill("solid", fgColor=navy)
+    header_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    data_font = Font(name="Calibri", size=10, color=navy)
+    data_align = Alignment(horizontal="left", vertical="center")
+    center_align = Alignment(horizontal="center", vertical="center")
+    alt_fill = PatternFill("solid", fgColor=light_gray)
+    white_fill = PatternFill("solid", fgColor=white)
+    gap_fill = PatternFill("solid", fgColor=red_bg)
+    gap_font = Font(name="Calibri", size=10, bold=True, color=red_fg)
+    nogap_fill = PatternFill("solid", fgColor=green_bg)
+    nogap_font = Font(name="Calibri", size=10, bold=True, color=green_fg)
 
-        # Sheet 3: Summary
-        total = len(classes)
-        non_master_sources = set()
-        for c in classes:
-            non_master_sources.update(c["matches"].keys())
-            non_master_sources.update(c["gaps"])
+    def _style_title_rows(ws, title_text, subtitle_text, num_cols):
+        """Add branded title + subtitle rows to a worksheet."""
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=num_cols)
+        t = ws.cell(row=1, column=1, value=f"  {title_text}")
+        t.font = title_font
+        t.fill = title_fill
+        t.alignment = Alignment(horizontal="left", vertical="center")
+        ws.row_dimensions[1].height = 36
+        ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=num_cols)
+        s = ws.cell(row=2, column=1, value=f"  {subtitle_text}")
+        s.font = sub_font
+        s.fill = sub_fill
+        s.alignment = Alignment(horizontal="left", vertical="center")
+        ws.row_dimensions[2].height = 24
 
-        no_gaps = sum(1 for c in classes if not c["gaps"])
-        summary_rows = [
-            {"Metric": "Total Equipment Classes", "Value": total},
-            {"Metric": "Master Reference", "Value": " + ".join(FILE_TYPES.get(m, m) for m in masters)},
-            {"Metric": "Compared Against", "Value": ", ".join(FILE_TYPES.get(s, s) for s in sorted(non_master_sources))},
-            {"Metric": "Match Threshold", "Value": f"{st.session_state.match_threshold}%"},
-            {"Metric": "Classes with No Gaps", "Value": f"{no_gaps} / {total}"},
-            {"Metric": "Total Gap Entries", "Value": sum(len(c["gaps"]) for c in classes)},
-        ]
-        for src in sorted(non_master_sources):
-            cnt = sum(1 for c in classes if src in c["matches"])
-            pct = int(round(cnt / total * 100)) if total else 0
-            gap_cnt = total - cnt
-            summary_rows.append({
-                "Metric": f"{FILE_TYPES.get(src, src)}",
-                "Value": f"Matched: {cnt}/{total} ({pct}%) — Gaps: {gap_cnt}",
+    def _write_headers(ws, row, headers):
+        for ci, h in enumerate(headers, 1):
+            cell = ws.cell(row=row, column=ci, value=h)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_align
+            cell.border = thin_border
+        ws.row_dimensions[row].height = 28
+
+    # ── Build data ──
+    df = build_export_df(classes)
+    total = len(classes)
+    non_master_sources = set()
+    for c in classes:
+        non_master_sources.update(c["matches"].keys())
+        non_master_sources.update(c["gaps"])
+    non_master_sources = sorted(non_master_sources)
+
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+
+    # ── Sheet 1: Harmonization Results ──
+    ws1 = wb.create_sheet("Harmonization Results")
+    cols = list(df.columns)
+    master_label = " + ".join(FILE_TYPES.get(m, m) for m in masters)
+    compared = ", ".join(FILE_TYPES.get(s, s) for s in non_master_sources)
+    _style_title_rows(ws1, "KBR RDL — Harmonization Results",
+                      f"Master: {master_label}  |  Compared: {compared}  |  Threshold: {st.session_state.match_threshold}%  |  Total: {total} classes",
+                      len(cols))
+    _write_headers(ws1, 3, cols)
+    ws1.auto_filter.ref = f"A3:{get_column_letter(len(cols))}3"
+    ws1.freeze_panes = "A4"
+
+    for ri, (_, row) in enumerate(df.iterrows(), 4):
+        is_alt = (ri % 2 == 0)
+        for ci, col_name in enumerate(cols, 1):
+            val = row[col_name]
+            cell = ws1.cell(row=ri, column=ci, value=val)
+            cell.font = data_font
+            cell.alignment = center_align if col_name in ("#", "Gap Count", "Masters Cross-Match%") or "Match%" in str(col_name) else data_align
+            cell.border = thin_border
+            # Color the Gap In / Status columns
+            if col_name == "Gap In":
+                if val == "No Gaps":
+                    cell.fill = nogap_fill
+                    cell.font = nogap_font
+                elif val:
+                    cell.fill = gap_fill
+                    cell.font = gap_font
+                else:
+                    cell.fill = alt_fill if is_alt else white_fill
+            elif "Status" in str(col_name):
+                if val == "GAP":
+                    cell.fill = gap_fill
+                    cell.font = gap_font
+                elif val and "Exact" in str(val):
+                    cell.fill = nogap_fill
+                    cell.font = nogap_font
+                else:
+                    cell.fill = alt_fill if is_alt else white_fill
+            else:
+                cell.fill = alt_fill if is_alt else white_fill
+
+    # Auto-fit
+    for ci, col_name in enumerate(cols, 1):
+        max_len = max(len(str(col_name)), max((len(str(row[col_name] or "")) for _, row in df.iterrows()), default=5))
+        ws1.column_dimensions[get_column_letter(ci)].width = min(max_len + 4, 45)
+
+    # ── Sheet 2: Gap Analysis ──
+    ws2 = wb.create_sheet("Gap Analysis")
+    gap_rows = []
+    for c in classes:
+        for g in c["gaps"]:
+            present_in = [FILE_TYPES.get(m, m) for m in masters if m in c["master_entries"]]
+            present_in += [FILE_TYPES.get(s, s) for s in c["matches"]]
+            gap_rows.append({
+                "#": c["index"],
+                "Equipment Class": c["canonical_name"],
+                "Found In": ", ".join(present_in),
+                "Gap In": FILE_TYPES.get(g, g),
+                "Action": f"Add '{c['canonical_name']}' to {FILE_TYPES.get(g, g)} or confirm exclusion",
             })
-        pd.DataFrame(summary_rows).to_excel(writer, sheet_name="Summary", index=False)
+    gap_cols = ["#", "Equipment Class", "Found In", "Gap In", "Action"]
+    no_gaps_cnt = sum(1 for c in classes if not c["gaps"])
+    _style_title_rows(ws2, "KBR RDL — Gap Analysis",
+                      f"{len(gap_rows)} gaps identified  |  {no_gaps_cnt}/{total} classes fully matched",
+                      len(gap_cols))
+    _write_headers(ws2, 3, gap_cols)
+    ws2.auto_filter.ref = f"A3:{get_column_letter(len(gap_cols))}3"
+    ws2.freeze_panes = "A4"
 
-        # Auto-fit columns
-        for sheet_name in writer.sheets:
-            ws = writer.sheets[sheet_name]
-            for col_cells in ws.columns:
-                max_len = max(len(str(cell.value or "")) for cell in col_cells)
-                ws.column_dimensions[col_cells[0].column_letter].width = min(max_len + 3, 50)
+    for ri, grow in enumerate(gap_rows, 4):
+        is_alt = (ri % 2 == 0)
+        for ci, col_name in enumerate(gap_cols, 1):
+            val = grow[col_name]
+            cell = ws2.cell(row=ri, column=ci, value=val)
+            cell.font = data_font
+            cell.alignment = center_align if col_name == "#" else data_align
+            cell.border = thin_border
+            if col_name == "Gap In":
+                cell.fill = gap_fill
+                cell.font = gap_font
+            else:
+                cell.fill = alt_fill if is_alt else white_fill
+    gap_widths = [6, 40, 40, 25, 55]
+    for ci, w in enumerate(gap_widths, 1):
+        ws2.column_dimensions[get_column_letter(ci)].width = w
 
+    # ── Sheet 3: Summary ──
+    ws3 = wb.create_sheet("Summary")
+    _style_title_rows(ws3, "KBR RDL — Summary Report", f"Generated from harmonization of {total} equipment classes", 2)
+    _write_headers(ws3, 3, ["Metric", "Value"])
+
+    no_gaps = sum(1 for c in classes if not c["gaps"])
+    summary_data = [
+        ("Total Equipment Classes", total),
+        ("Master Reference", master_label),
+        ("Compared Against", compared),
+        ("Match Threshold", f"{st.session_state.match_threshold}%"),
+        ("Classes with No Gaps", f"{no_gaps} / {total}"),
+        ("Total Gap Entries", sum(len(c["gaps"]) for c in classes)),
+    ]
+    for src in non_master_sources:
+        cnt = sum(1 for c in classes if src in c["matches"])
+        pct = int(round(cnt / total * 100)) if total else 0
+        gap_cnt = total - cnt
+        summary_data.append((FILE_TYPES.get(src, src), f"Matched: {cnt}/{total} ({pct}%) — Gaps: {gap_cnt}"))
+
+    for ri, (metric, value) in enumerate(summary_data, 4):
+        is_alt = (ri % 2 == 0)
+        mc = ws3.cell(row=ri, column=1, value=metric)
+        mc.font = Font(name="Calibri", size=10, bold=True, color=navy)
+        mc.fill = alt_fill if is_alt else white_fill
+        mc.border = thin_border
+        vc = ws3.cell(row=ri, column=2, value=value)
+        vc.font = data_font
+        vc.fill = alt_fill if is_alt else white_fill
+        vc.border = thin_border
+    ws3.column_dimensions["A"].width = 30
+    ws3.column_dimensions["B"].width = 50
+
+    buf = io.BytesIO()
+    wb.save(buf)
     buf.seek(0)
     return buf.getvalue()
 
@@ -927,89 +1068,255 @@ def _lookup_cfihos(name, cfihos_records, threshold):
 
 
 def build_enriched_master_excel(selected_additions):
-    """Build an Excel file containing the original master records + selected additions.
+    """Build a professionally styled Excel file: original master records + selected additions."""
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
 
-    Columns: Status | Id | Name | CFIHOS Code | CFIHOS Name
-    """
     masters = st.session_state.masters
     files = st.session_state.files
     threshold = st.session_state.match_threshold
     buf = io.BytesIO()
 
-    # Get CFIHOS records if available (for matching)
+    # ── Style definitions ──
+    kbr_red = "B91C1C"
+    kbr_dark = "7F1D1D"
+    navy = "1E293B"
+    green_bg = "D1FAE5"
+    green_fg = "065F46"
+    blue_bg = "DBEAFE"
+    blue_fg = "1E40AF"
+    orange_bg = "FFEDD5"
+    orange_fg = "9A3412"
+    light_gray = "F8FAFC"
+    border_gray = "E2E8F0"
+    white = "FFFFFF"
+
+    thin_border = Border(
+        left=Side(style="thin", color=border_gray),
+        right=Side(style="thin", color=border_gray),
+        top=Side(style="thin", color=border_gray),
+        bottom=Side(style="thin", color=border_gray),
+    )
+
+    # Title row style
+    title_font = Font(name="Calibri", size=16, bold=True, color=white)
+    title_fill = PatternFill("solid", fgColor=kbr_red)
+    title_align = Alignment(horizontal="left", vertical="center")
+
+    # Subtitle row
+    sub_font = Font(name="Calibri", size=10, color="94A3B8")
+    sub_fill = PatternFill("solid", fgColor=kbr_dark)
+
+    # Header row style
+    header_font = Font(name="Calibri", size=10, bold=True, color=white)
+    header_fill = PatternFill("solid", fgColor=navy)
+    header_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    # Data row styles
+    orig_fill = PatternFill("solid", fgColor=white)
+    sugg_fill = PatternFill("solid", fgColor=blue_bg)
+    data_font = Font(name="Calibri", size=10, color=navy)
+    data_align = Alignment(horizontal="left", vertical="center")
+    center_align = Alignment(horizontal="center", vertical="center")
+
+    # Match column styles
+    exact_fill = PatternFill("solid", fgColor=green_bg)
+    exact_font = Font(name="Calibri", size=10, bold=True, color=green_fg)
+    partial_fill = PatternFill("solid", fgColor=orange_bg)
+    partial_font = Font(name="Calibri", size=10, bold=True, color=orange_fg)
+    status_orig_fill = PatternFill("solid", fgColor=green_bg)
+    status_orig_font = Font(name="Calibri", size=10, bold=True, color=green_fg)
+    status_sugg_fill = PatternFill("solid", fgColor=blue_bg)
+    status_sugg_font = Font(name="Calibri", size=10, bold=True, color=blue_fg)
+
+    # Alt row
+    alt_fill = PatternFill("solid", fgColor=light_gray)
+
+    # Get CFIHOS records if available
     cfihos_records = []
     if "cfihos" in files:
         cfihos_records = files["cfihos"]["records"]
 
-    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        for m in masters:
-            if m not in files:
-                continue
-            original = files[m]["records"]
-            label = FILE_TYPES.get(m, m)
+    wb = __import__("openpyxl").Workbook()
+    wb.remove(wb.active)  # remove default sheet
 
-            # Original records
-            orig_rows = []
-            for r in original:
-                # Use stored cfihos_ref if available (Aramco has it)
-                cfihos_code = r.get("cfihos_ref", "")
-                cfihos_name = ""
-                cfihos_match = ""
-                if cfihos_code and cfihos_code != "nan" and cfihos_records:
-                    # Look up the CFIHOS name by ID — this is a hard/direct reference
-                    for cr in cfihos_records:
-                        if cr["id"] == cfihos_code:
-                            cfihos_name = cr["name"]
-                            cfihos_match = "Exact"
-                            break
-                    if not cfihos_name:
-                        cfihos_match = "Ref Only"
-                if not cfihos_code or cfihos_code == "nan":
-                    # Try fuzzy match against CFIHOS
-                    cfihos_code, cfihos_name, cfihos_match = _lookup_cfihos(r["name"], cfihos_records, threshold)
-                orig_rows.append({
-                    "Status": "Original",
-                    "Id": r["id"],
-                    "Name": r["name"],
-                    "CFIHOS Code": cfihos_code if cfihos_code != "nan" else "",
-                    "CFIHOS Name": cfihos_name,
-                    "CFIHOS Match": cfihos_match,
-                })
+    columns = ["#", "Status", "Id", "Name", "CFIHOS Code", "CFIHOS Name", "CFIHOS Match"]
+    col_widths = [6, 28, 18, 40, 16, 40, 14]
 
-            # Suggested additions — fuzzy match each against CFIHOS
-            for rec in selected_additions:
-                cfihos_code, cfihos_name, cfihos_match = _lookup_cfihos(rec["name"], cfihos_records, threshold)
-                orig_rows.append({
-                    "Status": f"Suggested from {FILE_TYPES.get(rec['source'], rec['source'])}",
-                    "Id": f"NEW-{rec['id']}",
-                    "Name": rec["name"],
-                    "CFIHOS Code": cfihos_code,
-                    "CFIHOS Name": cfihos_name,
-                    "CFIHOS Match": cfihos_match,
-                })
+    for m in masters:
+        if m not in files:
+            continue
+        original = files[m]["records"]
+        label = FILE_TYPES.get(m, m)
+        ws = wb.create_sheet(title=f"{label} Enriched")
 
-            df = pd.DataFrame(orig_rows)
-            df.to_excel(writer, sheet_name=f"{label} Enriched", index=False)
+        # ── Row 1: Title bar ──
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(columns))
+        title_cell = ws.cell(row=1, column=1, value=f"  KBR RDL Data Harmonizer — {label} Enriched Master")
+        title_cell.font = title_font
+        title_cell.fill = title_fill
+        title_cell.alignment = title_align
+        ws.row_dimensions[1].height = 36
 
-        # Summary sheet
-        summary_rows = [
-            {"Metric": "Original Master", "Value": " + ".join(FILE_TYPES.get(m, m) for m in masters)},
-            {"Metric": "Original Classes", "Value": sum(len(files[m]["records"]) for m in masters if m in files)},
-            {"Metric": "Suggested Additions", "Value": len(selected_additions)},
-            {"Metric": "New Total", "Value": sum(len(files[m]["records"]) for m in masters if m in files) + len(selected_additions)},
-        ]
-        for src in set(r["source"] for r in selected_additions):
-            cnt = sum(1 for r in selected_additions if r["source"] == src)
-            summary_rows.append({"Metric": f"Added from {FILE_TYPES.get(src, src)}", "Value": cnt})
-        pd.DataFrame(summary_rows).to_excel(writer, sheet_name="Enrichment Summary", index=False)
+        # ── Row 2: Subtitle ──
+        ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(columns))
+        orig_cnt = len(original)
+        add_cnt = len(selected_additions)
+        sub_cell = ws.cell(row=2, column=1,
+                           value=f"  Original: {orig_cnt} classes  |  Suggested Additions: {add_cnt}  |  New Total: {orig_cnt + add_cnt}  |  Threshold: {threshold}%")
+        sub_cell.font = Font(name="Calibri", size=10, color=white)
+        sub_cell.fill = sub_fill
+        sub_cell.alignment = Alignment(horizontal="left", vertical="center")
+        ws.row_dimensions[2].height = 24
 
-        # Auto-fit columns
-        for sheet_name in writer.sheets:
-            ws = writer.sheets[sheet_name]
-            for col_cells in ws.columns:
-                max_len = max(len(str(cell.value or "")) for cell in col_cells)
-                ws.column_dimensions[col_cells[0].column_letter].width = min(max_len + 3, 50)
+        # ── Row 3: Column headers ──
+        for ci, col_name in enumerate(columns, 1):
+            cell = ws.cell(row=3, column=ci, value=col_name)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_align
+            cell.border = thin_border
+        ws.row_dimensions[3].height = 28
+        ws.auto_filter.ref = f"A3:{get_column_letter(len(columns))}3"
 
+        # ── Data rows ──
+        row_num = 4
+        counter = 1
+
+        # Original records
+        for r in original:
+            cfihos_code = r.get("cfihos_ref", "")
+            cfihos_name = ""
+            cfihos_match = ""
+            if cfihos_code and cfihos_code != "nan" and cfihos_records:
+                for cr in cfihos_records:
+                    if cr["id"] == cfihos_code:
+                        cfihos_name = cr["name"]
+                        cfihos_match = "Exact"
+                        break
+                if not cfihos_name:
+                    cfihos_match = "Ref Only"
+            if not cfihos_code or cfihos_code == "nan":
+                cfihos_code, cfihos_name, cfihos_match = _lookup_cfihos(r["name"], cfihos_records, threshold)
+
+            values = [counter, "Original", r["id"], r["name"],
+                      cfihos_code if cfihos_code != "nan" else "", cfihos_name, cfihos_match]
+            is_alt = (counter % 2 == 0)
+            for ci, val in enumerate(values, 1):
+                cell = ws.cell(row=row_num, column=ci, value=val)
+                cell.font = data_font
+                cell.alignment = center_align if ci in (1, 7) else data_align
+                cell.border = thin_border
+                # Status column styling
+                if ci == 2:
+                    cell.fill = status_orig_fill
+                    cell.font = status_orig_font
+                    cell.alignment = center_align
+                # Match column styling
+                elif ci == 7 and val:
+                    if val == "Exact":
+                        cell.fill = exact_fill
+                        cell.font = exact_font
+                    else:
+                        cell.fill = partial_fill
+                        cell.font = partial_font
+                else:
+                    cell.fill = alt_fill if is_alt else orig_fill
+
+            counter += 1
+            row_num += 1
+
+        # Separator row
+        ws.merge_cells(start_row=row_num, start_column=1, end_row=row_num, end_column=len(columns))
+        sep_cell = ws.cell(row=row_num, column=1, value="  SUGGESTED ADDITIONS")
+        sep_cell.font = Font(name="Calibri", size=10, bold=True, color=white)
+        sep_cell.fill = PatternFill("solid", fgColor="2563EB")
+        sep_cell.alignment = Alignment(horizontal="left", vertical="center")
+        ws.row_dimensions[row_num].height = 26
+        row_num += 1
+
+        # Suggested additions
+        for rec in selected_additions:
+            cfihos_code, cfihos_name, cfihos_match = _lookup_cfihos(rec["name"], cfihos_records, threshold)
+            src_label = FILE_TYPES.get(rec["source"], rec["source"])
+            values = [counter, f"Suggested from {src_label}", f"NEW-{rec['id']}", rec["name"],
+                      cfihos_code, cfihos_name, cfihos_match]
+            is_alt = (counter % 2 == 0)
+            for ci, val in enumerate(values, 1):
+                cell = ws.cell(row=row_num, column=ci, value=val)
+                cell.font = data_font
+                cell.alignment = center_align if ci in (1, 7) else data_align
+                cell.border = thin_border
+                if ci == 2:
+                    cell.fill = status_sugg_fill
+                    cell.font = status_sugg_font
+                    cell.alignment = center_align
+                elif ci == 7 and val:
+                    if val == "Exact":
+                        cell.fill = exact_fill
+                        cell.font = exact_font
+                    else:
+                        cell.fill = partial_fill
+                        cell.font = partial_font
+                else:
+                    cell.fill = sugg_fill if not is_alt else PatternFill("solid", fgColor="C7D2FE")
+
+            counter += 1
+            row_num += 1
+
+        # Set column widths
+        for ci, w in enumerate(col_widths, 1):
+            ws.column_dimensions[get_column_letter(ci)].width = w
+
+        # Freeze panes below header
+        ws.freeze_panes = "A4"
+
+    # ── Summary sheet ──
+    ws_sum = wb.create_sheet(title="Enrichment Summary")
+    orig_total = sum(len(files[m]["records"]) for m in masters if m in files)
+
+    # Title
+    ws_sum.merge_cells("A1:B1")
+    t = ws_sum.cell(row=1, column=1, value="  Enrichment Summary")
+    t.font = title_font
+    t.fill = title_fill
+    t.alignment = title_align
+    ws_sum.row_dimensions[1].height = 36
+
+    summary_data = [
+        ("Original Master", " + ".join(FILE_TYPES.get(m, m) for m in masters)),
+        ("Original Classes", orig_total),
+        ("Suggested Additions", len(selected_additions)),
+        ("New Total", orig_total + len(selected_additions)),
+        ("Match Threshold", f"{threshold}%"),
+    ]
+    for src in sorted(set(r["source"] for r in selected_additions)):
+        cnt = sum(1 for r in selected_additions if r["source"] == src)
+        summary_data.append((f"Added from {FILE_TYPES.get(src, src)}", cnt))
+
+    # Headers
+    for ci, h in enumerate(["Metric", "Value"], 1):
+        cell = ws_sum.cell(row=3, column=ci, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = header_align
+        cell.border = thin_border
+
+    for ri, (metric, value) in enumerate(summary_data, 4):
+        mc = ws_sum.cell(row=ri, column=1, value=metric)
+        mc.font = Font(name="Calibri", size=10, bold=True, color=navy)
+        mc.fill = alt_fill if ri % 2 == 0 else orig_fill
+        mc.border = thin_border
+        vc = ws_sum.cell(row=ri, column=2, value=value)
+        vc.font = data_font
+        vc.fill = alt_fill if ri % 2 == 0 else orig_fill
+        vc.border = thin_border
+
+    ws_sum.column_dimensions["A"].width = 30
+    ws_sum.column_dimensions["B"].width = 35
+
+    buf = io.BytesIO()
+    wb.save(buf)
     buf.seek(0)
     return buf.getvalue()
 
@@ -1969,15 +2276,37 @@ with tab_search:
     query = st.text_input("Equipment name", placeholder="e.g. centrifugal pump...")
 
     if query and st.session_state.classes:
-        names = [c["canonical_name"] for c in st.session_state.classes]
-        result = process.extractOne(query, names, scorer=fuzz.token_sort_ratio)
-        if result:
-            name, score, idx = result
+        # Build expanded search index: include compound "/" parts so
+        # searching "Junction Box" finds "Junction Box / Splice Case"
+        search_names = []
+        search_idx_map = []  # maps expanded index -> original class index
+        for ci, c in enumerate(st.session_state.classes):
+            search_names.append(c["canonical_name"])
+            search_idx_map.append(ci)
+            if "/" in c["canonical_name"]:
+                for part in [p.strip() for p in c["canonical_name"].split("/") if p.strip()]:
+                    search_names.append(part)
+                    search_idx_map.append(ci)
+
+        # Try token_set_ratio first (better for subset queries like "Junction Box")
+        # then fall back to token_sort_ratio
+        best_result = None
+        best_score = 0
+        for scorer in (fuzz.token_set_ratio, fuzz.token_sort_ratio):
+            result = process.extractOne(query, search_names, scorer=scorer)
+            if result and result[1] > best_score:
+                best_result = result
+                best_score = result[1]
+
+        if best_result:
+            matched_name, score, exp_idx = best_result
+            orig_idx = search_idx_map[exp_idx]
             score = int(round(score))
-            c = st.session_state.classes[idx]
+            c = st.session_state.classes[orig_idx]
             status, _ = classify_match(score)
             color = "green" if score >= 90 else "orange" if score >= 75 else "red"
 
+            name = c["canonical_name"]
             st.markdown(f"### :{color}[**{name}** — {score}% ({status})]")
 
             col_l, col_r = st.columns(2)
