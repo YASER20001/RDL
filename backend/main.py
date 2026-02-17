@@ -617,13 +617,15 @@ def build_excel_bytes(classes):
 
 
 def _lookup_cfihos(name, cfihos_records, threshold):
-    """Try to fuzzy-match a name against CFIHOS records. Returns (id, name) or ('', '')."""
+    """Try to fuzzy-match a name against CFIHOS records. Returns (id, name, match_label)."""
     if not cfihos_records:
-        return "", ""
+        return "", "", ""
     match = fuzzy_match(name, cfihos_records, threshold)
     if match:
-        return match["id"], match["name"]
-    return "", ""
+        score = match["score"]
+        label = "Exact" if score == 100 else f"{score}%"
+        return match["id"], match["name"], label
+    return "", "", ""
 
 
 def build_enriched_master_excel(selected_additions):
@@ -654,32 +656,38 @@ def build_enriched_master_excel(selected_additions):
                 # Use stored cfihos_ref if available (Aramco has it)
                 cfihos_code = r.get("cfihos_ref", "")
                 cfihos_name = ""
+                cfihos_match = ""
                 if cfihos_code and cfihos_code != "nan" and cfihos_records:
-                    # Look up the CFIHOS name by ID
+                    # Look up the CFIHOS name by ID — this is a hard/direct reference
                     for cr in cfihos_records:
                         if cr["id"] == cfihos_code:
                             cfihos_name = cr["name"]
+                            cfihos_match = "Exact"
                             break
+                    if not cfihos_name:
+                        cfihos_match = "Ref Only"
                 if not cfihos_code or cfihos_code == "nan":
                     # Try fuzzy match against CFIHOS
-                    cfihos_code, cfihos_name = _lookup_cfihos(r["name"], cfihos_records, threshold)
+                    cfihos_code, cfihos_name, cfihos_match = _lookup_cfihos(r["name"], cfihos_records, threshold)
                 orig_rows.append({
                     "Status": "Original",
                     "Id": r["id"],
                     "Name": r["name"],
                     "CFIHOS Code": cfihos_code if cfihos_code != "nan" else "",
                     "CFIHOS Name": cfihos_name,
+                    "CFIHOS Match": cfihos_match,
                 })
 
             # Suggested additions — fuzzy match each against CFIHOS
             for rec in selected_additions:
-                cfihos_code, cfihos_name = _lookup_cfihos(rec["name"], cfihos_records, threshold)
+                cfihos_code, cfihos_name, cfihos_match = _lookup_cfihos(rec["name"], cfihos_records, threshold)
                 orig_rows.append({
                     "Status": f"Suggested from {FILE_TYPES.get(rec['source'], rec['source'])}",
                     "Id": f"NEW-{rec['id']}",
                     "Name": rec["name"],
                     "CFIHOS Code": cfihos_code,
                     "CFIHOS Name": cfihos_name,
+                    "CFIHOS Match": cfihos_match,
                 })
 
             df = pd.DataFrame(orig_rows)
@@ -1091,13 +1099,14 @@ with tab_gaps:
             preview_rows = []
             for src, recs in sorted(reverse_gaps.items()):
                 for rec in recs:
-                    cfihos_code, cfihos_name = _lookup_cfihos(rec["name"], cfihos_records, threshold)
+                    cfihos_code, cfihos_name, cfihos_match = _lookup_cfihos(rec["name"], cfihos_records, threshold)
                     row = {
                         "Source": FILE_TYPES.get(src, src),
                         "ID": rec["id"],
                         "Name": rec["name"],
                         "CFIHOS Code": cfihos_code,
                         "CFIHOS Name": cfihos_name,
+                        "CFIHOS Match": cfihos_match,
                         "_source_key": src,
                     }
                     if "discipline" in rec and rec["discipline"]:
@@ -1105,7 +1114,7 @@ with tab_gaps:
                     preview_rows.append(row)
 
             preview_df = pd.DataFrame(preview_rows)
-            display_cols = [c for c in ["Source", "ID", "Name", "CFIHOS Code", "CFIHOS Name", "Discipline"] if c in preview_df.columns]
+            display_cols = [c for c in ["Source", "ID", "Name", "CFIHOS Code", "CFIHOS Name", "CFIHOS Match", "Discipline"] if c in preview_df.columns]
 
             # Source filter for enrichment
             enrich_sources = sorted(reverse_gaps.keys())
