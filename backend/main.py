@@ -30,15 +30,16 @@ st.markdown("""
 
 /* ── Root variables ── */
 :root {
-    --kbr-red: #b91c1c;
-    --kbr-red-dark: #7f1d1d;
-    --kbr-red-light: #fecaca;
-    --kbr-navy: #1e293b;
+    --kbr-primary: #003087;
+    --kbr-primary-dark: #001d54;
+    --kbr-primary-light: #c7d6f0;
+    --kbr-navy: #1B3A5C;
     --kbr-blue: #2563eb;
     --kbr-green: #059669;
     --kbr-orange: #d97706;
     --kbr-purple: #7c3aed;
     --kbr-gray: #64748b;
+    --kbr-accent: #00A3E0;
     --card-bg: #ffffff;
     --card-border: #e2e8f0;
     --card-shadow: 0 1px 3px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.06);
@@ -69,7 +70,7 @@ header {visibility: hidden;}
     background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
     border-radius: 12px 12px 0 0;
     padding: 4px 4px 0 4px;
-    border-bottom: 2px solid var(--kbr-red);
+    border-bottom: 2px solid var(--kbr-primary);
 }
 .stTabs [data-baseweb="tab"] {
     font-weight: 500;
@@ -81,13 +82,13 @@ header {visibility: hidden;}
 }
 .stTabs [aria-selected="true"] {
     background: white !important;
-    color: var(--kbr-red) !important;
+    color: var(--kbr-primary) !important;
     font-weight: 700;
-    border-top: 3px solid var(--kbr-red);
+    border-top: 3px solid var(--kbr-primary);
 }
 .stTabs [data-baseweb="tab"]:hover {
-    color: var(--kbr-red);
-    background: rgba(185, 28, 28, 0.05);
+    color: var(--kbr-primary);
+    background: rgba(0, 48, 135, 0.05);
 }
 .stTabs [data-baseweb="tab-panel"] {
     padding: 1.5rem 0.5rem;
@@ -97,7 +98,7 @@ header {visibility: hidden;}
 [data-testid="stMetric"] {
     background: var(--card-bg);
     border: 1px solid var(--card-border);
-    border-left: 4px solid var(--kbr-red);
+    border-left: 4px solid var(--kbr-primary);
     border-radius: var(--radius);
     padding: 1rem 1.2rem;
     box-shadow: var(--card-shadow);
@@ -122,17 +123,17 @@ header {visibility: hidden;}
 
 /* ── Buttons ── */
 .stButton > button[kind="primary"] {
-    background: linear-gradient(135deg, var(--kbr-red) 0%, var(--kbr-red-dark) 100%) !important;
+    background: linear-gradient(135deg, var(--kbr-primary) 0%, var(--kbr-primary-dark) 100%) !important;
     border: none !important;
     font-weight: 600 !important;
     letter-spacing: 0.02em;
     padding: 0.6rem 1.5rem !important;
     border-radius: 8px !important;
-    box-shadow: 0 2px 8px rgba(185, 28, 28, 0.3) !important;
+    box-shadow: 0 2px 8px rgba(0, 48, 135, 0.3) !important;
     transition: all 0.2s ease !important;
 }
 .stButton > button[kind="primary"]:hover {
-    box-shadow: 0 4px 16px rgba(185, 28, 28, 0.4) !important;
+    box-shadow: 0 4px 16px rgba(0, 48, 135, 0.4) !important;
     transform: translateY(-1px);
 }
 .stButton > button[kind="secondary"], .stButton > button:not([kind]) {
@@ -142,8 +143,8 @@ header {visibility: hidden;}
     transition: all 0.2s ease !important;
 }
 .stButton > button[kind="secondary"]:hover, .stButton > button:not([kind]):hover {
-    border-color: var(--kbr-red) !important;
-    color: var(--kbr-red) !important;
+    border-color: var(--kbr-primary) !important;
+    color: var(--kbr-primary) !important;
 }
 
 /* ── Download button ── */
@@ -182,7 +183,7 @@ header {visibility: hidden;}
     transition: border-color 0.2s ease;
 }
 [data-testid="stFileUploader"]:hover {
-    border-color: var(--kbr-red);
+    border-color: var(--kbr-primary);
 }
 
 /* ── Selectbox / multiselect ── */
@@ -192,7 +193,7 @@ header {visibility: hidden;}
 
 /* ── Slider ── */
 .stSlider > div > div > div > div {
-    background: var(--kbr-red) !important;
+    background: var(--kbr-primary) !important;
 }
 
 /* ── Dividers ── */
@@ -228,7 +229,7 @@ hr {
     font-weight: 600;
 }
 .stat-pill.green { background: #d1fae5; color: #065f46; }
-.stat-pill.red { background: #fee2e2; color: #991b1b; }
+.stat-pill.primary { background: #c7d6f0; color: #003087; }
 .stat-pill.blue { background: #dbeafe; color: #1e40af; }
 .stat-pill.orange { background: #ffedd5; color: #9a3412; }
 .stat-pill.purple { background: #ede9fe; color: #5b21b6; }
@@ -858,10 +859,11 @@ def build_excel_bytes(classes):
 
     masters = st.session_state.masters
 
-    # Style constants
-    kbr_red = "B91C1C"
-    kbr_dark = "7F1D1D"
-    navy = "1E293B"
+    # Style constants — KBR corporate navy blue
+    kbr_primary = "003087"
+    kbr_dark = "001D54"
+    kbr_accent = "00A3E0"
+    navy = "1B3A5C"
     white = "FFFFFF"
     light_gray = "F8FAFC"
     border_gray = "E2E8F0"
@@ -877,7 +879,7 @@ def build_excel_bytes(classes):
         bottom=Side(style="thin", color=border_gray),
     )
     title_font = Font(name="Calibri", size=16, bold=True, color=white)
-    title_fill = PatternFill("solid", fgColor=kbr_red)
+    title_fill = PatternFill("solid", fgColor=kbr_primary)
     sub_font = Font(name="Calibri", size=10, color=white)
     sub_fill = PatternFill("solid", fgColor=kbr_dark)
     header_font = Font(name="Calibri", size=10, bold=True, color=white)
@@ -893,20 +895,33 @@ def build_excel_bytes(classes):
     nogap_fill = PatternFill("solid", fgColor=green_bg)
     nogap_font = Font(name="Calibri", size=10, bold=True, color=green_fg)
 
+    logo_font = Font(name="Calibri", size=14, bold=True, color=kbr_accent)
+    logo_sub_font = Font(name="Calibri", size=9, color="94A3B8")
+    logo_fill = PatternFill("solid", fgColor=kbr_dark)
+
     def _style_title_rows(ws, title_text, subtitle_text, num_cols):
-        """Add branded title + subtitle rows to a worksheet."""
+        """Add KBR-AMCDE logo + branded title + subtitle rows (rows 1-3)."""
+        # Row 1: KBR-AMCDE logo bar
         ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=num_cols)
-        t = ws.cell(row=1, column=1, value=f"  {title_text}")
+        logo_cell = ws.cell(row=1, column=1, value="  KBR-AMCDE  |  RDL Data Harmonizer v3.0")
+        logo_cell.font = logo_font
+        logo_cell.fill = logo_fill
+        logo_cell.alignment = Alignment(horizontal="left", vertical="center")
+        ws.row_dimensions[1].height = 30
+        # Row 2: Title
+        ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=num_cols)
+        t = ws.cell(row=2, column=1, value=f"  {title_text}")
         t.font = title_font
         t.fill = title_fill
         t.alignment = Alignment(horizontal="left", vertical="center")
-        ws.row_dimensions[1].height = 36
-        ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=num_cols)
-        s = ws.cell(row=2, column=1, value=f"  {subtitle_text}")
+        ws.row_dimensions[2].height = 36
+        # Row 3: Subtitle
+        ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=num_cols)
+        s = ws.cell(row=3, column=1, value=f"  {subtitle_text}")
         s.font = sub_font
         s.fill = sub_fill
         s.alignment = Alignment(horizontal="left", vertical="center")
-        ws.row_dimensions[2].height = 24
+        ws.row_dimensions[3].height = 24
 
     def _write_headers(ws, row, headers):
         for ci, h in enumerate(headers, 1):
@@ -937,11 +952,11 @@ def build_excel_bytes(classes):
     _style_title_rows(ws1, "KBR RDL — Harmonization Results",
                       f"Master: {master_label}  |  Compared: {compared}  |  Threshold: {st.session_state.match_threshold}%  |  Total: {total} classes",
                       len(cols))
-    _write_headers(ws1, 3, cols)
-    ws1.auto_filter.ref = f"A3:{get_column_letter(len(cols))}3"
-    ws1.freeze_panes = "A4"
+    _write_headers(ws1, 4, cols)
+    ws1.auto_filter.ref = f"A4:{get_column_letter(len(cols))}4"
+    ws1.freeze_panes = "A5"
 
-    for ri, (_, row) in enumerate(df.iterrows(), 4):
+    for ri, (_, row) in enumerate(df.iterrows(), 5):
         is_alt = (ri % 2 == 0)
         for ci, col_name in enumerate(cols, 1):
             val = row[col_name]
@@ -995,11 +1010,11 @@ def build_excel_bytes(classes):
     _style_title_rows(ws2, "KBR RDL — Gap Analysis",
                       f"{len(gap_rows)} gaps identified  |  {no_gaps_cnt}/{total} classes fully matched",
                       len(gap_cols))
-    _write_headers(ws2, 3, gap_cols)
-    ws2.auto_filter.ref = f"A3:{get_column_letter(len(gap_cols))}3"
-    ws2.freeze_panes = "A4"
+    _write_headers(ws2, 4, gap_cols)
+    ws2.auto_filter.ref = f"A4:{get_column_letter(len(gap_cols))}4"
+    ws2.freeze_panes = "A5"
 
-    for ri, grow in enumerate(gap_rows, 4):
+    for ri, grow in enumerate(gap_rows, 5):
         is_alt = (ri % 2 == 0)
         for ci, col_name in enumerate(gap_cols, 1):
             val = grow[col_name]
@@ -1019,7 +1034,7 @@ def build_excel_bytes(classes):
     # ── Sheet 3: Summary ──
     ws3 = wb.create_sheet("Summary")
     _style_title_rows(ws3, "KBR RDL — Summary Report", f"Generated from harmonization of {total} equipment classes", 2)
-    _write_headers(ws3, 3, ["Metric", "Value"])
+    _write_headers(ws3, 4, ["Metric", "Value"])
 
     no_gaps = sum(1 for c in classes if not c["gaps"])
     summary_data = [
@@ -1036,7 +1051,7 @@ def build_excel_bytes(classes):
         gap_cnt = total - cnt
         summary_data.append((FILE_TYPES.get(src, src), f"Matched: {cnt}/{total} ({pct}%) — Gaps: {gap_cnt}"))
 
-    for ri, (metric, value) in enumerate(summary_data, 4):
+    for ri, (metric, value) in enumerate(summary_data, 5):
         is_alt = (ri % 2 == 0)
         mc = ws3.cell(row=ri, column=1, value=metric)
         mc.font = Font(name="Calibri", size=10, bold=True, color=navy)
@@ -1077,10 +1092,11 @@ def build_enriched_master_excel(selected_additions):
     threshold = st.session_state.match_threshold
     buf = io.BytesIO()
 
-    # ── Style definitions ──
-    kbr_red = "B91C1C"
-    kbr_dark = "7F1D1D"
-    navy = "1E293B"
+    # ── Style definitions — KBR corporate navy blue ──
+    kbr_primary = "003087"
+    kbr_dark = "001D54"
+    kbr_accent = "00A3E0"
+    navy = "1B3A5C"
     green_bg = "D1FAE5"
     green_fg = "065F46"
     blue_bg = "DBEAFE"
@@ -1100,11 +1116,11 @@ def build_enriched_master_excel(selected_additions):
 
     # Title row style
     title_font = Font(name="Calibri", size=16, bold=True, color=white)
-    title_fill = PatternFill("solid", fgColor=kbr_red)
+    title_fill = PatternFill("solid", fgColor=kbr_primary)
     title_align = Alignment(horizontal="left", vertical="center")
 
     # Subtitle row
-    sub_font = Font(name="Calibri", size=10, color="94A3B8")
+    sub_font = Font(name="Calibri", size=10, color=white)
     sub_fill = PatternFill("solid", fgColor=kbr_dark)
 
     # Header row style
@@ -1150,37 +1166,46 @@ def build_enriched_master_excel(selected_additions):
         label = FILE_TYPES.get(m, m)
         ws = wb.create_sheet(title=f"{label} Enriched")
 
-        # ── Row 1: Title bar ──
-        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(columns))
-        title_cell = ws.cell(row=1, column=1, value=f"  KBR RDL Data Harmonizer — {label} Enriched Master")
+        # ── Row 1: KBR-AMCDE logo bar ──
+        nc = len(columns)
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=nc)
+        logo_c = ws.cell(row=1, column=1, value="  KBR-AMCDE  |  RDL Data Harmonizer v3.0")
+        logo_c.font = Font(name="Calibri", size=14, bold=True, color=kbr_accent)
+        logo_c.fill = PatternFill("solid", fgColor=kbr_dark)
+        logo_c.alignment = Alignment(horizontal="left", vertical="center")
+        ws.row_dimensions[1].height = 30
+
+        # ── Row 2: Title bar ──
+        ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=nc)
+        title_cell = ws.cell(row=2, column=1, value=f"  {label} — Enriched Master")
         title_cell.font = title_font
         title_cell.fill = title_fill
         title_cell.alignment = title_align
-        ws.row_dimensions[1].height = 36
+        ws.row_dimensions[2].height = 36
 
-        # ── Row 2: Subtitle ──
-        ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=len(columns))
+        # ── Row 3: Subtitle ──
+        ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=nc)
         orig_cnt = len(original)
         add_cnt = len(selected_additions)
-        sub_cell = ws.cell(row=2, column=1,
+        sub_cell = ws.cell(row=3, column=1,
                            value=f"  Original: {orig_cnt} classes  |  Suggested Additions: {add_cnt}  |  New Total: {orig_cnt + add_cnt}  |  Threshold: {threshold}%")
         sub_cell.font = Font(name="Calibri", size=10, color=white)
         sub_cell.fill = sub_fill
         sub_cell.alignment = Alignment(horizontal="left", vertical="center")
-        ws.row_dimensions[2].height = 24
+        ws.row_dimensions[3].height = 24
 
-        # ── Row 3: Column headers ──
+        # ── Row 4: Column headers ──
         for ci, col_name in enumerate(columns, 1):
-            cell = ws.cell(row=3, column=ci, value=col_name)
+            cell = ws.cell(row=4, column=ci, value=col_name)
             cell.font = header_font
             cell.fill = header_fill
             cell.alignment = header_align
             cell.border = thin_border
-        ws.row_dimensions[3].height = 28
-        ws.auto_filter.ref = f"A3:{get_column_letter(len(columns))}3"
+        ws.row_dimensions[4].height = 28
+        ws.auto_filter.ref = f"A4:{get_column_letter(nc)}4"
 
         # ── Data rows ──
-        row_num = 4
+        row_num = 5
         counter = 1
 
         # Original records
@@ -1269,19 +1294,26 @@ def build_enriched_master_excel(selected_additions):
             ws.column_dimensions[get_column_letter(ci)].width = w
 
         # Freeze panes below header
-        ws.freeze_panes = "A4"
+        ws.freeze_panes = "A5"
 
     # ── Summary sheet ──
     ws_sum = wb.create_sheet(title="Enrichment Summary")
     orig_total = sum(len(files[m]["records"]) for m in masters if m in files)
 
-    # Title
+    # Logo row
     ws_sum.merge_cells("A1:B1")
-    t = ws_sum.cell(row=1, column=1, value="  Enrichment Summary")
+    lc = ws_sum.cell(row=1, column=1, value="  KBR-AMCDE  |  RDL Data Harmonizer v3.0")
+    lc.font = Font(name="Calibri", size=14, bold=True, color=kbr_accent)
+    lc.fill = PatternFill("solid", fgColor=kbr_dark)
+    lc.alignment = Alignment(horizontal="left", vertical="center")
+    ws_sum.row_dimensions[1].height = 30
+    # Title
+    ws_sum.merge_cells("A2:B2")
+    t = ws_sum.cell(row=2, column=1, value="  Enrichment Summary")
     t.font = title_font
     t.fill = title_fill
     t.alignment = title_align
-    ws_sum.row_dimensions[1].height = 36
+    ws_sum.row_dimensions[2].height = 36
 
     summary_data = [
         ("Original Master", " + ".join(FILE_TYPES.get(m, m) for m in masters)),
@@ -1296,13 +1328,13 @@ def build_enriched_master_excel(selected_additions):
 
     # Headers
     for ci, h in enumerate(["Metric", "Value"], 1):
-        cell = ws_sum.cell(row=3, column=ci, value=h)
+        cell = ws_sum.cell(row=4, column=ci, value=h)
         cell.font = header_font
         cell.fill = header_fill
         cell.alignment = header_align
         cell.border = thin_border
 
-    for ri, (metric, value) in enumerate(summary_data, 4):
+    for ri, (metric, value) in enumerate(summary_data, 5):
         mc = ws_sum.cell(row=ri, column=1, value=metric)
         mc.font = Font(name="Calibri", size=10, bold=True, color=navy)
         mc.fill = alt_fill if ri % 2 == 0 else orig_fill
@@ -1314,6 +1346,106 @@ def build_enriched_master_excel(selected_additions):
 
     ws_sum.column_dimensions["A"].width = 30
     ws_sum.column_dimensions["B"].width = 35
+
+    # ── Attributes sheet — ISM Functional Class Attributes by class ──
+    aramco_attrs = st.session_state.get("aramco_attrs")
+    if aramco_attrs is not None and not aramco_attrs.empty and "Class_Id" in aramco_attrs.columns:
+        ws_attr = wb.create_sheet(title="Class Attributes")
+
+        # Logo + title
+        attr_cols_list = ["Class_Id", "Name", "Description", "Presence", "Size",
+                          "Discipline", "UomClassId", "UomRequire", "ValidationRule", "Group_Id"]
+        attr_cols_list = [c for c in attr_cols_list if c in aramco_attrs.columns]
+        nc = len(attr_cols_list)
+        ws_attr.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max(nc, 2))
+        lc = ws_attr.cell(row=1, column=1, value="  KBR-AMCDE  |  RDL Data Harmonizer v3.0")
+        lc.font = Font(name="Calibri", size=14, bold=True, color=kbr_accent)
+        lc.fill = PatternFill("solid", fgColor=kbr_dark)
+        lc.alignment = Alignment(horizontal="left", vertical="center")
+        ws_attr.row_dimensions[1].height = 30
+
+        ws_attr.merge_cells(start_row=2, start_column=1, end_row=2, end_column=max(nc, 2))
+        tc = ws_attr.cell(row=2, column=1, value="  ISM Functional Class Attributes — Organized by Class")
+        tc.font = title_font
+        tc.fill = title_fill
+        tc.alignment = Alignment(horizontal="left", vertical="center")
+        ws_attr.row_dimensions[2].height = 36
+
+        # Build all original + suggested class names with their IDs
+        all_class_ids = {}
+        for m_key in masters:
+            if m_key in files:
+                for r in files[m_key]["records"]:
+                    all_class_ids.setdefault(r["name"], set()).add(str(r["id"]).strip())
+        for rec in selected_additions:
+            all_class_ids.setdefault(rec["name"], set()).add(str(rec["id"]).strip())
+
+        row_num = 3
+        class_separator_fill = PatternFill("solid", fgColor=kbr_primary)
+        class_separator_font = Font(name="Calibri", size=11, bold=True, color=white)
+
+        for class_name in sorted(all_class_ids.keys()):
+            ids = all_class_ids[class_name]
+            mask = aramco_attrs["Class_Id"].astype(str).str.strip().isin(ids)
+            subset = aramco_attrs[mask]
+            if subset.empty:
+                continue
+
+            # Class separator row
+            ws_attr.merge_cells(start_row=row_num, start_column=1, end_row=row_num, end_column=nc)
+            sep = ws_attr.cell(row=row_num, column=1,
+                               value=f"  {class_name}  ({', '.join(sorted(ids))})  —  {len(subset)} attributes")
+            sep.font = class_separator_font
+            sep.fill = class_separator_fill
+            sep.alignment = Alignment(horizontal="left", vertical="center")
+            ws_attr.row_dimensions[row_num].height = 26
+            row_num += 1
+
+            # Column headers for this class
+            for ci, col_name in enumerate(attr_cols_list, 1):
+                cell = ws_attr.cell(row=row_num, column=ci, value=col_name)
+                cell.font = header_font
+                cell.fill = header_fill
+                cell.alignment = header_align
+                cell.border = thin_border
+            ws_attr.row_dimensions[row_num].height = 24
+            row_num += 1
+
+            # Data rows
+            for _, attr_row in subset.iterrows():
+                is_alt = (row_num % 2 == 0)
+                for ci, col_name in enumerate(attr_cols_list, 1):
+                    val = attr_row.get(col_name, "")
+                    if pd.isna(val):
+                        val = ""
+                    cell = ws_attr.cell(row=row_num, column=ci, value=str(val))
+                    cell.font = data_font
+                    cell.alignment = data_align
+                    cell.border = thin_border
+                    # Color presence column
+                    if col_name == "Presence":
+                        sv = str(val).strip().lower()
+                        if sv in ("mandatory", "required", "m"):
+                            cell.fill = PatternFill("solid", fgColor=green_bg)
+                            cell.font = Font(name="Calibri", size=10, bold=True, color=green_fg)
+                        elif sv in ("optional", "o"):
+                            cell.fill = PatternFill("solid", fgColor=blue_bg)
+                            cell.font = Font(name="Calibri", size=10, color=blue_fg)
+                        else:
+                            cell.fill = alt_fill if is_alt else orig_fill
+                    else:
+                        cell.fill = alt_fill if is_alt else orig_fill
+                row_num += 1
+
+            # Blank separator row
+            row_num += 1
+
+        # Auto-fit attribute columns
+        attr_widths = {"Class_Id": 14, "Name": 35, "Description": 40, "Presence": 12,
+                       "Size": 8, "Discipline": 15, "UomClassId": 14, "UomRequire": 12,
+                       "ValidationRule": 20, "Group_Id": 14}
+        for ci, col_name in enumerate(attr_cols_list, 1):
+            ws_attr.column_dimensions[get_column_letter(ci)].width = attr_widths.get(col_name, 18)
 
     buf = io.BytesIO()
     wb.save(buf)
@@ -1412,38 +1544,44 @@ def build_overview_graph(classes, max_rows=20):
 
 # ── Header ──
 st.markdown("""
-<div style="background: linear-gradient(135deg, #b91c1c 0%, #7f1d1d 50%, #1e293b 100%);
+<div style="background: linear-gradient(135deg, #003087 0%, #001d54 50%, #1B3A5C 100%);
             padding: 1.8rem 2.5rem; border-radius: 16px; margin-bottom: 1.5rem;
-            box-shadow: 0 8px 32px rgba(127,29,29,0.3); position: relative; overflow: hidden;">
+            box-shadow: 0 8px 32px rgba(0,48,135,0.3); position: relative; overflow: hidden;">
     <div style="position: absolute; top: -20px; right: -20px; width: 200px; height: 200px;
                 background: radial-gradient(circle, rgba(255,255,255,0.08) 0%, transparent 70%);
                 border-radius: 50%;"></div>
     <div style="position: absolute; bottom: -30px; left: 30%; width: 150px; height: 150px;
-                background: radial-gradient(circle, rgba(255,255,255,0.05) 0%, transparent 70%);
+                background: radial-gradient(circle, rgba(0,163,224,0.15) 0%, transparent 70%);
                 border-radius: 50%;"></div>
     <div style="display: flex; align-items: center; justify-content: space-between; position: relative; z-index: 1;">
         <div>
-            <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.3rem;">
-                <div style="background: rgba(255,255,255,0.15); padding: 0.5rem 0.75rem; border-radius: 10px;
-                            backdrop-filter: blur(10px); font-size: 1.5rem;">&#9881;</div>
+            <div style="display: flex; align-items: center; gap: 1rem; margin-bottom: 0.4rem;">
+                <div style="background: rgba(255,255,255,0.12); padding: 0.5rem 1rem; border-radius: 10px;
+                            backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.15);">
+                    <span style="font-size: 1.1rem; font-weight: 800; color: #00A3E0;
+                                 letter-spacing: 0.15em; font-family: 'Inter', sans-serif;">KBR</span><span
+                          style="font-size: 0.7rem; font-weight: 600; color: rgba(255,255,255,0.7);
+                                 letter-spacing: 0.08em; margin-left: 0.15rem;">-AMCDE</span>
+                </div>
                 <h1 style="color: white; margin: 0; font-size: 1.9rem; font-weight: 800;
                            letter-spacing: -0.02em; font-family: 'Inter', sans-serif;">
-                    KBR RDL Data Harmonizer
+                    RDL Data Harmonizer
                 </h1>
             </div>
-            <p style="color: rgba(252,165,165,0.9); margin: 0; font-size: 0.88rem; font-weight: 400;
-                      letter-spacing: 0.02em; padding-left: 3.5rem;">
+            <p style="color: rgba(0,163,224,0.85); margin: 0; font-size: 0.88rem; font-weight: 400;
+                      letter-spacing: 0.02em; padding-left: 7.5rem;">
                 Equipment Class Harmonization &amp; Gap Analysis Platform
             </p>
         </div>
         <div style="text-align: right;">
-            <div style="background: rgba(255,255,255,0.12); padding: 0.35rem 1rem; border-radius: 20px;
-                        backdrop-filter: blur(10px); margin-bottom: 0.4rem;">
-                <span style="color: #fca5a5; font-size: 0.75rem; font-weight: 600;
+            <div style="background: rgba(0,163,224,0.15); padding: 0.35rem 1rem; border-radius: 20px;
+                        backdrop-filter: blur(10px); margin-bottom: 0.4rem;
+                        border: 1px solid rgba(0,163,224,0.25);">
+                <span style="color: #00A3E0; font-size: 0.75rem; font-weight: 600;
                              letter-spacing: 0.08em; text-transform: uppercase;">Version 3.0</span>
             </div>
             <p style="color: rgba(255,255,255,0.5); font-size: 0.72rem; margin: 0;">
-                Built by KBR AMCDE Team
+                Built by <span style="color: #00A3E0;">KBR AMCDE</span> Team
             </p>
         </div>
     </div>
@@ -1598,7 +1736,7 @@ with tab_upload:
             v = st.session_state.files[k]
             color = SOURCE_COLORS.get(k, "#6b7280")
             tag = "MASTER" if k in st.session_state.masters else ""
-            badge_html = f'<span class="stat-pill red" style="font-size:0.65rem;">{tag}</span> ' if tag else ""
+            badge_html = f'<span class="stat-pill primary" style="font-size:0.65rem;">{tag}</span> ' if tag else ""
             cards_html += f'''
             <div class="kpi-card" style="border-top: 3px solid {color};">
                 <div>{badge_html}</div>
@@ -2403,7 +2541,7 @@ st.markdown("""
             <span style="color: #94a3b8; font-size: 0.82rem;"> &mdash; v3.0</span>
         </div>
         <div style="color: #94a3b8; font-size: 0.78rem;">
-            Built by <strong style="color: #b91c1c;">KBR AMCDE Team</strong> &bull;
+            Built by <strong style="color: #003087;">KBR AMCDE Team</strong> &bull;
             Equipment Class Harmonization &amp; Gap Analysis Platform
         </div>
     </div>
