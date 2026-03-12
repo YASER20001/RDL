@@ -2039,8 +2039,8 @@ with tab_attrs:
         """, unsafe_allow_html=True)
 
         # Search filter: if a search match is active, filter attributes to that class
+        # Search filter: if a search match is active, show attributes for that class directly
         search_class = st.session_state.search_matched_class
-        search_filter_ids = None
         if search_class:
             # Collect all Class_Ids for the matched class
             _sf_ids = set()
@@ -2053,332 +2053,397 @@ with tab_attrs:
             search_filter_ids = list(_sf_ids)
             st.info(f"Filtered by search result: **{search_class['canonical_name']}**. Clear the search query in the Search tab to see all attributes.")
 
-            # Apply filter to attribute dataframes for this tab
+            # Filter attribute dataframes
+            filtered_aramco = None
+            filtered_ltc = None
             if aramco_attrs is not None and not aramco_attrs.empty and "Class_Id" in aramco_attrs.columns:
-                aramco_attrs = aramco_attrs[aramco_attrs["Class_Id"].astype(str).str.strip().isin(search_filter_ids)]
+                filtered_aramco = aramco_attrs[aramco_attrs["Class_Id"].astype(str).str.strip().isin(search_filter_ids)]
             if ltc_attrs is not None and not ltc_attrs.empty and "Class_Id" in ltc_attrs.columns:
-                ltc_attrs = ltc_attrs[ltc_attrs["Class_Id"].astype(str).str.strip().isin(search_filter_ids)]
+                filtered_ltc = ltc_attrs[ltc_attrs["Class_Id"].astype(str).str.strip().isin(search_filter_ids)]
 
-        # Show counts
-        attr_cols = st.columns(2)
-        with attr_cols[0]:
-            cnt = len(aramco_attrs) if aramco_attrs is not None else 0
-            st.metric("Aramco Functional Attributes", cnt)
-        with attr_cols[1]:
-            cnt = len(ltc_attrs) if ltc_attrs is not None else 0
-            st.metric("LTC Physical Attributes", cnt)
+            # Show counts
+            attr_cols = st.columns(2)
+            with attr_cols[0]:
+                cnt = len(filtered_aramco) if filtered_aramco is not None else 0
+                st.metric("Aramco Functional Attributes", cnt)
+            with attr_cols[1]:
+                cnt = len(filtered_ltc) if filtered_ltc is not None else 0
+                st.metric("LTC Physical Attributes", cnt)
 
-        st.divider()
+            st.divider()
+            st.caption(f"Class IDs: {', '.join(search_filter_ids)}")
 
-        # Build class list for picker
-        # If harmonization has been run, use the harmonized classes; otherwise derive from attribute data
-        class_options = []
-        class_id_map = {}  # display_name -> list of class_ids
-        if classes:
-            for c in classes:
-                display = c["canonical_name"]
-                ids = set()
-                for m in st.session_state.masters:
-                    me = c["master_entries"].get(m)
-                    if me:
-                        ids.add(str(me["id"]).strip())
-                for src, match in c["matches"].items():
-                    ids.add(str(match["id"]).strip())
-                class_options.append(display)
-                class_id_map[display] = list(ids)
-        else:
-            # Derive from attribute data directly
-            seen = set()
-            if aramco_attrs is not None and "Class_Id" in aramco_attrs.columns:
-                for cid in aramco_attrs["Class_Id"].dropna().unique():
-                    key = str(cid).strip()
-                    if key and key not in seen:
-                        seen.add(key)
-                        desc = ""
-                        if "Class_Desc" in aramco_attrs.columns:
-                            filtered = aramco_attrs[aramco_attrs["Class_Id"] == cid]
-                            if not filtered.empty:
-                                desc = str(filtered.iloc[0].get("Class_Desc", ""))
-                        label = f"{desc} ({key})" if desc and desc != "nan" else key
-                        class_options.append(label)
-                        class_id_map[label] = [key]
-            if ltc_attrs is not None and "Class_Id" in ltc_attrs.columns:
-                for cid in ltc_attrs["Class_Id"].dropna().unique():
-                    key = str(cid).strip()
-                    if key and key not in seen:
-                        seen.add(key)
-                        class_options.append(key)
-                        class_id_map[key] = [key]
-
-        attr_view = st.radio(
-            "View mode",
-            ["Browse by Class", "Discipline-wise Attributes", "Full Aramco Attributes", "Full LTC Attributes", "Attribute Comparison"],
-            horizontal=True,
-        )
-
-        if attr_view == "Browse by Class":
-            if not class_options:
-                st.warning("No class data available. Upload files and/or run harmonization first.")
+            # Show Aramco attributes
+            st.markdown("#### Aramco Functional Attributes")
+            if filtered_aramco is not None and not filtered_aramco.empty:
+                display_cols = [c for c in ["Attribute_Id", "Name", "Attribute_Desc", "Class_Desc",
+                                             "Description", "Presence", "Size",
+                                             "Discipline", "UomClassId", "UomRequire",
+                                             "ValidationRule", "Group_Id"] if c in filtered_aramco.columns]
+                st.dataframe(filtered_aramco[display_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
+                st.caption(f"{len(filtered_aramco)} attributes")
             else:
-                selected_class = st.selectbox("Select equipment class", class_options)
-                if selected_class:
-                    ids = class_id_map.get(selected_class, [])
-                    st.caption(f"Looking up Class IDs: {', '.join(ids)}")
+                st.warning("No Aramco attributes found for this class.")
 
-                    # Aramco attributes for this class
-                    st.markdown("#### Aramco Functional Attributes")
-                    if aramco_attrs is not None and "Class_Id" in aramco_attrs.columns:
-                        mask = aramco_attrs["Class_Id"].astype(str).str.strip().isin(ids)
-                        subset = aramco_attrs[mask]
-                        if subset.empty:
-                            st.warning("No Aramco attributes found for this class.")
-                        else:
-                            display_cols = [c for c in ["Attribute_Id", "Name", "Attribute_Desc", "Class_Desc",
-                                                         "Description", "Presence", "Size",
-                                                         "Discipline", "UomClassId", "UomRequire",
-                                                         "ValidationRule", "Group_Id"] if c in subset.columns]
-                            st.dataframe(subset[display_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
-                            st.caption(f"{len(subset)} attributes")
-                    else:
-                        st.info("Aramco attribute data not loaded.")
+            # Show LTC attributes
+            st.markdown("#### LTC Physical Attributes")
+            if filtered_ltc is not None and not filtered_ltc.empty:
+                display_cols = [c for c in ["Name", "Description", "Presence", "Size",
+                                             "Discipline", "UomClassId", "UomRequire",
+                                             "ValidationRule", "ValidationType", "MaxOccur",
+                                             "MinOccurs", "Aspect"] if c in filtered_ltc.columns]
+                st.dataframe(filtered_ltc[display_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
+                st.caption(f"{len(filtered_ltc)} attributes")
+            else:
+                st.warning("No LTC attributes found for this class.")
 
-                    # LTC attributes for this class
-                    st.markdown("#### LTC Physical Attributes")
-                    if ltc_attrs is not None and "Class_Id" in ltc_attrs.columns:
-                        mask = ltc_attrs["Class_Id"].astype(str).str.strip().isin(ids)
-                        subset = ltc_attrs[mask]
-                        if subset.empty:
-                            st.warning("No LTC attributes found for this class.")
-                        else:
-                            display_cols = [c for c in ["Name", "Description", "Presence", "Size",
-                                                         "Discipline", "UomClassId", "UomRequire",
-                                                         "ValidationRule", "ValidationType", "MaxOccur",
-                                                         "MinOccurs", "Aspect"] if c in subset.columns]
-                            st.dataframe(subset[display_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
-                            st.caption(f"{len(subset)} attributes")
-                    else:
-                        st.info("LTC attribute data not loaded.")
+            # Attribute comparison between sources
+            if filtered_aramco is not None and not filtered_aramco.empty and filtered_ltc is not None and not filtered_ltc.empty:
+                st.divider()
+                st.markdown("#### Attribute Comparison")
+                a_names = set(filtered_aramco["Name"].dropna().str.strip().str.lower()) if "Name" in filtered_aramco.columns else set()
+                l_names = set(filtered_ltc["Name"].dropna().str.strip().str.lower()) if "Name" in filtered_ltc.columns else set()
+                common = a_names & l_names
+                only_aramco = a_names - l_names
+                only_ltc = l_names - a_names
+                gap_cols = st.columns(3)
+                with gap_cols[0]:
+                    st.metric("Common", len(common))
+                with gap_cols[1]:
+                    st.metric("Only in Aramco", len(only_aramco))
+                with gap_cols[2]:
+                    st.metric("Only in LTC", len(only_ltc))
+                if only_aramco:
+                    with st.expander(f"Attributes only in Aramco ({len(only_aramco)})"):
+                        for name in sorted(only_aramco):
+                            st.markdown(f"- {name}")
+                if only_ltc:
+                    with st.expander(f"Attributes only in LTC ({len(only_ltc)})"):
+                        for name in sorted(only_ltc):
+                            st.markdown(f"- {name}")
 
-        elif attr_view == "Discipline-wise Attributes":
-            # Collect discipline info from harmonized classes
-            # Each class gets a discipline from KBR master or match sources
-            discipline_classes = {}  # discipline -> list of class names
-            discipline_class_ids = {}  # discipline -> set of class_ids (for attribute lookup)
+        else:
+            # No search filter — show normal view modes
+            # Show counts
+            attr_cols = st.columns(2)
+            with attr_cols[0]:
+                cnt = len(aramco_attrs) if aramco_attrs is not None else 0
+                st.metric("Aramco Functional Attributes", cnt)
+            with attr_cols[1]:
+                cnt = len(ltc_attrs) if ltc_attrs is not None else 0
+                st.metric("LTC Physical Attributes", cnt)
+
+            st.divider()
+
+            # Build class list for picker
+            # If harmonization has been run, use the harmonized classes; otherwise derive from attribute data
+            class_options = []
+            class_id_map = {}  # display_name -> list of class_ids
             if classes:
                 for c in classes:
-                    disc = None
-                    # Check KBR master entry for discipline
-                    for m in st.session_state.masters:
-                        me = c["master_entries"].get(m)
-                        if me and me.get("discipline"):
-                            disc = me["discipline"]
-                            break
-                    # Check matches for KBR discipline
-                    if not disc:
-                        for src, match in c["matches"].items():
-                            if match.get("discipline"):
-                                disc = match["discipline"]
-                                break
-                    if not disc:
-                        disc = "Unclassified"
-                    discipline_classes.setdefault(disc, []).append(c["canonical_name"])
-                    # Collect all Class_Ids for this class entry
-                    _ids = discipline_class_ids.setdefault(disc, set())
+                    display = c["canonical_name"]
+                    ids = set()
                     for m in st.session_state.masters:
                         me = c["master_entries"].get(m)
                         if me:
-                            _ids.add(str(me["id"]).strip())
+                            ids.add(str(me["id"]).strip())
                     for src, match in c["matches"].items():
-                        _ids.add(str(match["id"]).strip())
-
-            # Build discipline -> attributes mapping via Class_Id linkage
-            disc_aramco = {}
-            disc_ltc = {}
-
-            for disc, ids in discipline_class_ids.items():
-                if aramco_attrs is not None and not aramco_attrs.empty and "Class_Id" in aramco_attrs.columns:
-                    mask = aramco_attrs["Class_Id"].astype(str).str.strip().isin(ids)
-                    subset = aramco_attrs[mask]
-                    if not subset.empty:
-                        disc_aramco[disc] = subset
-                if ltc_attrs is not None and not ltc_attrs.empty and "Class_Id" in ltc_attrs.columns:
-                    mask = ltc_attrs["Class_Id"].astype(str).str.strip().isin(ids)
-                    subset = ltc_attrs[mask]
-                    if not subset.empty:
-                        disc_ltc[disc] = subset
-
-            # Merge all discipline names
-            all_disciplines = sorted(set(list(discipline_classes.keys()) + list(disc_aramco.keys()) + list(disc_ltc.keys())))
-
-            if not all_disciplines:
-                st.warning("No discipline information found. Upload files with discipline data (KBR FEED or attribute sheets with Discipline column).")
+                        ids.add(str(match["id"]).strip())
+                    class_options.append(display)
+                    class_id_map[display] = list(ids)
             else:
-                # Summary metrics
-                st.markdown("#### Discipline Summary")
-                summary_data = []
-                for disc in all_disciplines:
-                    n_classes = len(discipline_classes.get(disc, []))
-                    n_aramco_attrs = len(disc_aramco[disc]) if disc in disc_aramco else 0
-                    n_ltc_attrs = len(disc_ltc[disc]) if disc in disc_ltc else 0
-                    summary_data.append({
-                        "Discipline": disc,
-                        "Equipment Classes": n_classes,
-                        "Aramco Attributes": n_aramco_attrs,
-                        "LTC Attributes": n_ltc_attrs,
-                        "Total Attributes": n_aramco_attrs + n_ltc_attrs,
-                    })
-                summary_df = pd.DataFrame(summary_data)
-                st.dataframe(summary_df, use_container_width=True, hide_index=True)
+                # Derive from attribute data directly
+                seen = set()
+                if aramco_attrs is not None and "Class_Id" in aramco_attrs.columns:
+                    for cid in aramco_attrs["Class_Id"].dropna().unique():
+                        key = str(cid).strip()
+                        if key and key not in seen:
+                            seen.add(key)
+                            desc = ""
+                            if "Class_Desc" in aramco_attrs.columns:
+                                filtered = aramco_attrs[aramco_attrs["Class_Id"] == cid]
+                                if not filtered.empty:
+                                    desc = str(filtered.iloc[0].get("Class_Desc", ""))
+                            label = f"{desc} ({key})" if desc and desc != "nan" else key
+                            class_options.append(label)
+                            class_id_map[label] = [key]
+                if ltc_attrs is not None and "Class_Id" in ltc_attrs.columns:
+                    for cid in ltc_attrs["Class_Id"].dropna().unique():
+                        key = str(cid).strip()
+                        if key and key not in seen:
+                            seen.add(key)
+                            class_options.append(key)
+                            class_id_map[key] = [key]
 
-                st.divider()
+            attr_view = st.radio(
+                "View mode",
+                ["Browse by Class", "Discipline-wise Attributes", "Full Aramco Attributes", "Full LTC Attributes", "Attribute Comparison"],
+                horizontal=True,
+            )
 
-                # Discipline selector
-                selected_disc = st.selectbox("Select Discipline", all_disciplines, key="disc_select")
-                if selected_disc:
-                    # Show equipment classes in this discipline
-                    disc_class_list = discipline_classes.get(selected_disc, [])
-                    if disc_class_list:
-                        st.markdown(f"**Equipment Classes in {selected_disc}** ({len(disc_class_list)}):")
-                        for cn in sorted(disc_class_list):
-                            st.markdown(f"- {cn}")
-                    else:
-                        st.info(f"No harmonized equipment classes tagged under '{selected_disc}'.")
+            if attr_view == "Browse by Class":
+                if not class_options:
+                    st.warning("No class data available. Upload files and/or run harmonization first.")
+                else:
+                    selected_class = st.selectbox("Select equipment class", class_options)
+                    if selected_class:
+                        ids = class_id_map.get(selected_class, [])
+                        st.caption(f"Looking up Class IDs: {', '.join(ids)}")
+
+                        # Aramco attributes for this class
+                        st.markdown("#### Aramco Functional Attributes")
+                        if aramco_attrs is not None and "Class_Id" in aramco_attrs.columns:
+                            mask = aramco_attrs["Class_Id"].astype(str).str.strip().isin(ids)
+                            subset = aramco_attrs[mask]
+                            if subset.empty:
+                                st.warning("No Aramco attributes found for this class.")
+                            else:
+                                display_cols = [c for c in ["Attribute_Id", "Name", "Attribute_Desc", "Class_Desc",
+                                                             "Description", "Presence", "Size",
+                                                             "Discipline", "UomClassId", "UomRequire",
+                                                             "ValidationRule", "Group_Id"] if c in subset.columns]
+                                st.dataframe(subset[display_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
+                                st.caption(f"{len(subset)} attributes")
+                        else:
+                            st.info("Aramco attribute data not loaded.")
+
+                        # LTC attributes for this class
+                        st.markdown("#### LTC Physical Attributes")
+                        if ltc_attrs is not None and "Class_Id" in ltc_attrs.columns:
+                            mask = ltc_attrs["Class_Id"].astype(str).str.strip().isin(ids)
+                            subset = ltc_attrs[mask]
+                            if subset.empty:
+                                st.warning("No LTC attributes found for this class.")
+                            else:
+                                display_cols = [c for c in ["Name", "Description", "Presence", "Size",
+                                                             "Discipline", "UomClassId", "UomRequire",
+                                                             "ValidationRule", "ValidationType", "MaxOccur",
+                                                             "MinOccurs", "Aspect"] if c in subset.columns]
+                                st.dataframe(subset[display_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
+                                st.caption(f"{len(subset)} attributes")
+                        else:
+                            st.info("LTC attribute data not loaded.")
+
+            elif attr_view == "Discipline-wise Attributes":
+                # Collect discipline info from harmonized classes
+                # Each class gets a discipline from KBR master or match sources
+                discipline_classes = {}  # discipline -> list of class names
+                discipline_class_ids = {}  # discipline -> set of class_ids (for attribute lookup)
+                if classes:
+                    for c in classes:
+                        disc = None
+                        # Check KBR master entry for discipline
+                        for m in st.session_state.masters:
+                            me = c["master_entries"].get(m)
+                            if me and me.get("discipline"):
+                                disc = me["discipline"]
+                                break
+                        # Check matches for KBR discipline
+                        if not disc:
+                            for src, match in c["matches"].items():
+                                if match.get("discipline"):
+                                    disc = match["discipline"]
+                                    break
+                        if not disc:
+                            disc = "Unclassified"
+                        discipline_classes.setdefault(disc, []).append(c["canonical_name"])
+                        # Collect all Class_Ids for this class entry
+                        _ids = discipline_class_ids.setdefault(disc, set())
+                        for m in st.session_state.masters:
+                            me = c["master_entries"].get(m)
+                            if me:
+                                _ids.add(str(me["id"]).strip())
+                        for src, match in c["matches"].items():
+                            _ids.add(str(match["id"]).strip())
+
+                # Build discipline -> attributes mapping via Class_Id linkage
+                disc_aramco = {}
+                disc_ltc = {}
+
+                for disc, ids in discipline_class_ids.items():
+                    if aramco_attrs is not None and not aramco_attrs.empty and "Class_Id" in aramco_attrs.columns:
+                        mask = aramco_attrs["Class_Id"].astype(str).str.strip().isin(ids)
+                        subset = aramco_attrs[mask]
+                        if not subset.empty:
+                            disc_aramco[disc] = subset
+                    if ltc_attrs is not None and not ltc_attrs.empty and "Class_Id" in ltc_attrs.columns:
+                        mask = ltc_attrs["Class_Id"].astype(str).str.strip().isin(ids)
+                        subset = ltc_attrs[mask]
+                        if not subset.empty:
+                            disc_ltc[disc] = subset
+
+                # Merge all discipline names
+                all_disciplines = sorted(set(list(discipline_classes.keys()) + list(disc_aramco.keys()) + list(disc_ltc.keys())))
+
+                if not all_disciplines:
+                    st.warning("No discipline information found. Upload files with discipline data (KBR FEED or attribute sheets with Discipline column).")
+                else:
+                    # Summary metrics
+                    st.markdown("#### Discipline Summary")
+                    summary_data = []
+                    for disc in all_disciplines:
+                        n_classes = len(discipline_classes.get(disc, []))
+                        n_aramco_attrs = len(disc_aramco[disc]) if disc in disc_aramco else 0
+                        n_ltc_attrs = len(disc_ltc[disc]) if disc in disc_ltc else 0
+                        summary_data.append({
+                            "Discipline": disc,
+                            "Equipment Classes": n_classes,
+                            "Aramco Attributes": n_aramco_attrs,
+                            "LTC Attributes": n_ltc_attrs,
+                            "Total Attributes": n_aramco_attrs + n_ltc_attrs,
+                        })
+                    summary_df = pd.DataFrame(summary_data)
+                    st.dataframe(summary_df, use_container_width=True, hide_index=True)
 
                     st.divider()
 
-                    # Show Aramco attributes for this discipline
-                    col_a, col_l = st.columns(2)
-                    with col_a:
-                        st.markdown(f"**Aramco Attributes — {selected_disc}**")
-                        if selected_disc in disc_aramco:
-                            subset = disc_aramco[selected_disc]
-                            display_cols = [c for c in ["Class_Id", "Class_Desc", "Attribute_Id", "Name",
-                                                         "Attribute_Desc", "Presence", "Size",
-                                                         "UomClassId", "ValidationRule"] if c in subset.columns]
-                            st.dataframe(subset[display_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
-                            st.caption(f"{len(subset)} attributes")
-
-                            # Unique attribute names in this discipline
-                            if "Name" in subset.columns:
-                                unique_attrs = sorted(subset["Name"].dropna().unique())
-                                with st.expander(f"Unique Attribute Names ({len(unique_attrs)})"):
-                                    for a in unique_attrs:
-                                        st.markdown(f"- {a}")
+                    # Discipline selector
+                    selected_disc = st.selectbox("Select Discipline", all_disciplines, key="disc_select")
+                    if selected_disc:
+                        # Show equipment classes in this discipline
+                        disc_class_list = discipline_classes.get(selected_disc, [])
+                        if disc_class_list:
+                            st.markdown(f"**Equipment Classes in {selected_disc}** ({len(disc_class_list)}):")
+                            for cn in sorted(disc_class_list):
+                                st.markdown(f"- {cn}")
                         else:
-                            st.info("No Aramco attributes for this discipline.")
+                            st.info(f"No harmonized equipment classes tagged under '{selected_disc}'.")
 
-                    with col_l:
-                        st.markdown(f"**LTC Attributes — {selected_disc}**")
-                        if selected_disc in disc_ltc:
-                            subset = disc_ltc[selected_disc]
-                            display_cols = [c for c in ["Class_Id", "Name", "Description",
-                                                         "Presence", "Size", "UomClassId",
-                                                         "ValidationRule", "Aspect"] if c in subset.columns]
-                            st.dataframe(subset[display_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
-                            st.caption(f"{len(subset)} attributes")
-
-                            if "Name" in subset.columns:
-                                unique_attrs = sorted(subset["Name"].dropna().unique())
-                                with st.expander(f"Unique Attribute Names ({len(unique_attrs)})"):
-                                    for a in unique_attrs:
-                                        st.markdown(f"- {a}")
-                        else:
-                            st.info("No LTC attributes for this discipline.")
-
-                    # Cross-source attribute gap for this discipline
-                    if selected_disc in disc_aramco and selected_disc in disc_ltc:
                         st.divider()
-                        st.markdown(f"**Attribute Gap Analysis — {selected_disc}**")
-                        a_names = set(disc_aramco[selected_disc]["Name"].dropna().str.strip().str.lower()) if "Name" in disc_aramco[selected_disc].columns else set()
-                        l_names = set(disc_ltc[selected_disc]["Name"].dropna().str.strip().str.lower()) if "Name" in disc_ltc[selected_disc].columns else set()
-                        common = a_names & l_names
-                        only_a = a_names - l_names
-                        only_l = l_names - a_names
-                        gap_cols = st.columns(3)
-                        with gap_cols[0]:
-                            st.metric("Common", len(common))
-                        with gap_cols[1]:
-                            st.metric("Only in Aramco", len(only_a))
-                        with gap_cols[2]:
-                            st.metric("Only in LTC", len(only_l))
-                        if only_a:
-                            with st.expander(f"Attributes only in Aramco ({len(only_a)})"):
-                                for n in sorted(only_a):
-                                    st.markdown(f"- {n}")
-                        if only_l:
-                            with st.expander(f"Attributes only in LTC ({len(only_l)})"):
-                                for n in sorted(only_l):
-                                    st.markdown(f"- {n}")
 
-        elif attr_view == "Full Aramco Attributes":
-            if aramco_attrs is not None:
-                st.dataframe(aramco_attrs.drop(columns=["_source"], errors="ignore"), use_container_width=True, hide_index=True)
-                st.caption(f"Total: {len(aramco_attrs)} rows")
-            else:
-                st.info("Aramco attribute data not loaded.")
+                        # Show Aramco attributes for this discipline
+                        col_a, col_l = st.columns(2)
+                        with col_a:
+                            st.markdown(f"**Aramco Attributes — {selected_disc}**")
+                            if selected_disc in disc_aramco:
+                                subset = disc_aramco[selected_disc]
+                                display_cols = [c for c in ["Class_Id", "Class_Desc", "Attribute_Id", "Name",
+                                                             "Attribute_Desc", "Presence", "Size",
+                                                             "UomClassId", "ValidationRule"] if c in subset.columns]
+                                st.dataframe(subset[display_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
+                                st.caption(f"{len(subset)} attributes")
 
-        elif attr_view == "Full LTC Attributes":
-            if ltc_attrs is not None:
-                st.dataframe(ltc_attrs.drop(columns=["_source"], errors="ignore"), use_container_width=True, hide_index=True)
-                st.caption(f"Total: {len(ltc_attrs)} rows")
-            else:
-                st.info("LTC attribute data not loaded.")
+                                # Unique attribute names in this discipline
+                                if "Name" in subset.columns:
+                                    unique_attrs = sorted(subset["Name"].dropna().unique())
+                                    with st.expander(f"Unique Attribute Names ({len(unique_attrs)})"):
+                                        for a in unique_attrs:
+                                            st.markdown(f"- {a}")
+                            else:
+                                st.info("No Aramco attributes for this discipline.")
 
-        elif attr_view == "Attribute Comparison":
-            if aramco_attrs is None or ltc_attrs is None:
-                st.warning("Need both Aramco and LTC attribute data for comparison. Upload both files.")
-            elif not class_options:
-                st.warning("No class data available. Upload files and/or run harmonization.")
-            else:
-                selected_class = st.selectbox("Select equipment class for comparison", class_options, key="attr_cmp_class")
-                if selected_class:
-                    ids = class_id_map.get(selected_class, [])
+                        with col_l:
+                            st.markdown(f"**LTC Attributes — {selected_disc}**")
+                            if selected_disc in disc_ltc:
+                                subset = disc_ltc[selected_disc]
+                                display_cols = [c for c in ["Class_Id", "Name", "Description",
+                                                             "Presence", "Size", "UomClassId",
+                                                             "ValidationRule", "Aspect"] if c in subset.columns]
+                                st.dataframe(subset[display_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
+                                st.caption(f"{len(subset)} attributes")
 
-                    aramco_sub = aramco_attrs[aramco_attrs["Class_Id"].astype(str).str.strip().isin(ids)]
-                    ltc_sub = ltc_attrs[ltc_attrs["Class_Id"].astype(str).str.strip().isin(ids)]
+                                if "Name" in subset.columns:
+                                    unique_attrs = sorted(subset["Name"].dropna().unique())
+                                    with st.expander(f"Unique Attribute Names ({len(unique_attrs)})"):
+                                        for a in unique_attrs:
+                                            st.markdown(f"- {a}")
+                            else:
+                                st.info("No LTC attributes for this discipline.")
 
-                    aramco_names = set(aramco_sub["Name"].dropna().str.strip().str.lower()) if "Name" in aramco_sub.columns else set()
-                    ltc_names = set(ltc_sub["Name"].dropna().str.strip().str.lower()) if "Name" in ltc_sub.columns else set()
+                        # Cross-source attribute gap for this discipline
+                        if selected_disc in disc_aramco and selected_disc in disc_ltc:
+                            st.divider()
+                            st.markdown(f"**Attribute Gap Analysis — {selected_disc}**")
+                            a_names = set(disc_aramco[selected_disc]["Name"].dropna().str.strip().str.lower()) if "Name" in disc_aramco[selected_disc].columns else set()
+                            l_names = set(disc_ltc[selected_disc]["Name"].dropna().str.strip().str.lower()) if "Name" in disc_ltc[selected_disc].columns else set()
+                            common = a_names & l_names
+                            only_a = a_names - l_names
+                            only_l = l_names - a_names
+                            gap_cols = st.columns(3)
+                            with gap_cols[0]:
+                                st.metric("Common", len(common))
+                            with gap_cols[1]:
+                                st.metric("Only in Aramco", len(only_a))
+                            with gap_cols[2]:
+                                st.metric("Only in LTC", len(only_l))
+                            if only_a:
+                                with st.expander(f"Attributes only in Aramco ({len(only_a)})"):
+                                    for n in sorted(only_a):
+                                        st.markdown(f"- {n}")
+                            if only_l:
+                                with st.expander(f"Attributes only in LTC ({len(only_l)})"):
+                                    for n in sorted(only_l):
+                                        st.markdown(f"- {n}")
 
-                    common = aramco_names & ltc_names
-                    only_aramco = aramco_names - ltc_names
-                    only_ltc = ltc_names - aramco_names
+            elif attr_view == "Full Aramco Attributes":
+                if aramco_attrs is not None:
+                    st.dataframe(aramco_attrs.drop(columns=["_source"], errors="ignore"), use_container_width=True, hide_index=True)
+                    st.caption(f"Total: {len(aramco_attrs)} rows")
+                else:
+                    st.info("Aramco attribute data not loaded.")
 
-                    cmp_cols = st.columns(3)
-                    with cmp_cols[0]:
-                        st.metric("Common Attributes", len(common))
-                    with cmp_cols[1]:
-                        st.metric("Only in Aramco", len(only_aramco))
-                    with cmp_cols[2]:
-                        st.metric("Only in LTC", len(only_ltc))
+            elif attr_view == "Full LTC Attributes":
+                if ltc_attrs is not None:
+                    st.dataframe(ltc_attrs.drop(columns=["_source"], errors="ignore"), use_container_width=True, hide_index=True)
+                    st.caption(f"Total: {len(ltc_attrs)} rows")
+                else:
+                    st.info("LTC attribute data not loaded.")
 
-                    st.divider()
-                    col_left, col_right = st.columns(2)
-                    with col_left:
-                        st.markdown("**Aramco Attributes**")
-                        if not aramco_sub.empty:
-                            display_cols = [c for c in ["Name", "Attribute_Desc", "Presence", "Size", "Description"] if c in aramco_sub.columns]
-                            st.dataframe(aramco_sub[display_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
-                        else:
-                            st.info("No Aramco attributes for this class.")
-                    with col_right:
-                        st.markdown("**LTC Attributes**")
-                        if not ltc_sub.empty:
-                            display_cols = [c for c in ["Name", "Presence", "Size", "Description"] if c in ltc_sub.columns]
-                            st.dataframe(ltc_sub[display_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
-                        else:
-                            st.info("No LTC attributes for this class.")
+            elif attr_view == "Attribute Comparison":
+                if aramco_attrs is None or ltc_attrs is None:
+                    st.warning("Need both Aramco and LTC attribute data for comparison. Upload both files.")
+                elif not class_options:
+                    st.warning("No class data available. Upload files and/or run harmonization.")
+                else:
+                    selected_class = st.selectbox("Select equipment class for comparison", class_options, key="attr_cmp_class")
+                    if selected_class:
+                        ids = class_id_map.get(selected_class, [])
 
-                    if only_aramco:
-                        st.markdown("**:orange[Attributes only in Aramco (gap in LTC):]**")
-                        for name in sorted(only_aramco):
-                            st.markdown(f"- {name}")
-                    if only_ltc:
-                        st.markdown("**:blue[Attributes only in LTC (gap in Aramco):]**")
-                        for name in sorted(only_ltc):
-                            st.markdown(f"- {name}")
-                    if not only_aramco and not only_ltc:
-                        st.success("Both sources have the same attributes for this class.")
+                        aramco_sub = aramco_attrs[aramco_attrs["Class_Id"].astype(str).str.strip().isin(ids)]
+                        ltc_sub = ltc_attrs[ltc_attrs["Class_Id"].astype(str).str.strip().isin(ids)]
+
+                        aramco_names = set(aramco_sub["Name"].dropna().str.strip().str.lower()) if "Name" in aramco_sub.columns else set()
+                        ltc_names = set(ltc_sub["Name"].dropna().str.strip().str.lower()) if "Name" in ltc_sub.columns else set()
+
+                        common = aramco_names & ltc_names
+                        only_aramco = aramco_names - ltc_names
+                        only_ltc = ltc_names - aramco_names
+
+                        cmp_cols = st.columns(3)
+                        with cmp_cols[0]:
+                            st.metric("Common Attributes", len(common))
+                        with cmp_cols[1]:
+                            st.metric("Only in Aramco", len(only_aramco))
+                        with cmp_cols[2]:
+                            st.metric("Only in LTC", len(only_ltc))
+
+                        st.divider()
+                        col_left, col_right = st.columns(2)
+                        with col_left:
+                            st.markdown("**Aramco Attributes**")
+                            if not aramco_sub.empty:
+                                display_cols = [c for c in ["Name", "Attribute_Desc", "Presence", "Size", "Description"] if c in aramco_sub.columns]
+                                st.dataframe(aramco_sub[display_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
+                            else:
+                                st.info("No Aramco attributes for this class.")
+                        with col_right:
+                            st.markdown("**LTC Attributes**")
+                            if not ltc_sub.empty:
+                                display_cols = [c for c in ["Name", "Presence", "Size", "Description"] if c in ltc_sub.columns]
+                                st.dataframe(ltc_sub[display_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
+                            else:
+                                st.info("No LTC attributes for this class.")
+
+                        if only_aramco:
+                            st.markdown("**:orange[Attributes only in Aramco (gap in LTC):]**")
+                            for name in sorted(only_aramco):
+                                st.markdown(f"- {name}")
+                        if only_ltc:
+                            st.markdown("**:blue[Attributes only in LTC (gap in Aramco):]**")
+                            for name in sorted(only_ltc):
+                                st.markdown(f"- {name}")
+                        if not only_aramco and not only_ltc:
+                            st.success("Both sources have the same attributes for this class.")
 
 
 # ══════════════════════════════════════════════════════════════════════
