@@ -351,6 +351,54 @@ SOURCE_COLORS = {
     "sa_doc": "#d97706",
 }
 
+# Industry-standard abbreviation dictionary for smarter matching
+ABBREVIATIONS = {
+    "hx": "heat exchanger",
+    "ht": "heat",
+    "xchg": "exchanger",
+    "vlv": "valve",
+    "cmp": "compressor",
+    "comp": "compressor",
+    "pmp": "pump",
+    "gen": "generator",
+    "xfmr": "transformer",
+    "sep": "separator",
+    "tnk": "tank",
+    "tk": "tank",
+    "vsl": "vessel",
+    "mtr": "motor",
+    "drv": "driver",
+    "ctrl": "control",
+    "inst": "instrument",
+    "elec": "electric",
+    "mech": "mechanical",
+    "recip": "reciprocating",
+    "centrif": "centrifugal",
+    "atm": "atmospheric",
+    "ss": "stainless steel",
+}
+
+
+def _normalize_abbreviations(text):
+    """Expand known industry abbreviations in text for better matching."""
+    words = text.lower().split()
+    expanded = []
+    for w in words:
+        clean = re.sub(r'[^a-z0-9]', '', w)
+        if clean in ABBREVIATIONS:
+            expanded.append(ABBREVIATIONS[clean])
+        else:
+            expanded.append(w)
+    return " ".join(expanded)
+
+
+def _safe_str(val):
+    """Convert value to string, treating NaN/None as empty string."""
+    if pd.isna(val):
+        return ""
+    s = str(val).strip()
+    return "" if s.lower() == "nan" else s
+
 
 def add_log(msg, level="INFO"):
     st.session_state.logs.append(f"[{level}] {msg}")
@@ -362,45 +410,54 @@ def add_log(msg, level="INFO"):
 def read_aramco(file) -> list[dict]:
     try:
         df = pd.read_excel(file, sheet_name="ISM Functional Classes")
-    except Exception:
+    except (ValueError, KeyError):
         df = pd.read_excel(file, sheet_name=0)
     records = []
-    for _, row in df.iterrows():
+    for row in df.to_dict("records"):
+        name = _safe_str(row.get("Name", row.get("name", "")))
+        if not name:
+            continue
         records.append({
-            "id": str(row.get("Id", row.get("id", ""))),
-            "name": str(row.get("Name", row.get("name", ""))),
-            "cfihos_ref": str(row.get("nmcltr:CFIHOS_1.5", "")),
+            "id": _safe_str(row.get("Id", row.get("id", ""))),
+            "name": name,
+            "cfihos_ref": _safe_str(row.get("nmcltr:CFIHOS_1.5", "")),
             "source": "aramco",
         })
-    return [r for r in records if r["name"].strip()]
+    return records
 
 
 def read_cfihos(file) -> list[dict]:
     try:
         df = pd.read_excel(file, sheet_name="equipment class")
-    except Exception:
+    except (ValueError, KeyError):
         df = pd.read_excel(file, sheet_name=0)
     records = []
-    for _, row in df.iterrows():
+    for row in df.to_dict("records"):
+        name = _safe_str(row.get("equipment class name", row.get("name", "")))
+        if not name:
+            continue
         records.append({
-            "id": str(row.get("CFIHOS unique id", row.get("id", ""))),
-            "name": str(row.get("equipment class name", row.get("name", ""))),
+            "id": _safe_str(row.get("CFIHOS unique id", row.get("id", ""))),
+            "name": name,
             "source": "cfihos",
         })
-    return [r for r in records if r["name"].strip()]
+    return records
 
 
 def read_kbr(file) -> list[dict]:
     df = pd.read_excel(file, sheet_name=0)
     records = []
-    for _, row in df.iterrows():
+    for row in df.to_dict("records"):
+        name = _safe_str(row.get("Class Name (855)", row.get("name", "")))
+        if not name:
+            continue
         records.append({
-            "id": str(row.get("Class Id", row.get("id", ""))),
-            "name": str(row.get("Class Name (855)", row.get("name", ""))),
-            "discipline": str(row.get("Discipline", "")),
+            "id": _safe_str(row.get("Class Id", row.get("id", ""))),
+            "name": name,
+            "discipline": _safe_str(row.get("Discipline", "")),
             "source": "kbr",
         })
-    return [r for r in records if r["name"].strip()]
+    return records
 
 
 def read_ltc(file) -> list[dict]:
@@ -410,37 +467,42 @@ def read_ltc(file) -> list[dict]:
         try:
             df = pd.read_excel(file, sheet_name=sheet)
             break
-        except Exception:
+        except (ValueError, KeyError):
             continue
     if df is None:
         df = pd.read_excel(file, sheet_name=0)
     records = []
-    for _, row in df.iterrows():
-        raw_name = str(row.get("Name", row.get("name", "")))
+    for row in df.to_dict("records"):
+        raw_name = _safe_str(row.get("Name", row.get("name", "")))
+        if not raw_name:
+            continue
         # Strip [OBSOLETE] or similar bracketed prefixes so fuzzy matching works
         clean_name = re.sub(r'\[.*?\]\s*', '', raw_name).strip()
         records.append({
-            "id": str(row.get("Id", row.get("id", ""))),
+            "id": _safe_str(row.get("Id", row.get("id", ""))),
             "name": clean_name if clean_name else raw_name,
             "source": "ltc",
         })
-    return [r for r in records if r["name"].strip()]
+    return records
 
 
 def read_sa_doc(file) -> list[dict]:
     try:
         df = pd.read_excel(file, sheet_name="SA_DOC_attributes")
-    except Exception:
+    except (ValueError, KeyError):
         df = pd.read_excel(file, sheet_name=0)
     records = []
-    for _, row in df.iterrows():
+    for row in df.to_dict("records"):
+        name = _safe_str(row.get("Attribute", row.get("name", "")))
+        if not name:
+            continue
         records.append({
-            "id": str(row.get("ID (CFIHOS_1.5)", row.get("id", ""))),
-            "name": str(row.get("Attribute", row.get("name", ""))),
-            "cfihos_name": str(row.get("Name (CFIHOS_1.5)", "")),
+            "id": _safe_str(row.get("ID (CFIHOS_1.5)", row.get("id", ""))),
+            "name": name,
+            "cfihos_name": _safe_str(row.get("Name (CFIHOS_1.5)", "")),
             "source": "sa_doc",
         })
-    return [r for r in records if r["name"].strip()]
+    return records
 
 
 READERS = {
@@ -459,7 +521,7 @@ def read_aramco_attributes(file) -> pd.DataFrame:
     """Read Aramco 'ISM Functional Class Attributes' sheet."""
     try:
         df = pd.read_excel(file, sheet_name="ISM Functional Class Attributes")
-    except Exception:
+    except (ValueError, KeyError):
         return pd.DataFrame()
     col_map = {}
     for c in df.columns:
@@ -507,7 +569,7 @@ def read_ltc_attributes(file) -> pd.DataFrame:
     """Read LTC 'ISM Physical Class Attributes' sheet."""
     try:
         df = pd.read_excel(file, sheet_name="ISM Physical Class Attributes")
-    except Exception:
+    except (ValueError, KeyError):
         return pd.DataFrame()
     col_map = {}
     for c in df.columns:
@@ -556,7 +618,8 @@ def read_ltc_attributes(file) -> pd.DataFrame:
 # ──────────────────────────────────────────────────────────────────────
 def _tokenize(text):
     words = set(re.findall(r'[a-z]{2,}', text.lower()))
-    noise = {"the", "and", "for", "with", "from", "that", "this", "its"}
+    noise = {"the", "and", "for", "with", "from", "that", "this", "its",
+             "type", "class", "system", "item", "general", "other", "misc"}
     return words - noise
 
 
@@ -567,8 +630,16 @@ def _has_word_overlap(name_a, name_b):
         return True
     if tokens_a & tokens_b:
         return True
-    for a in tokens_a:
-        for b in tokens_b:
+    # Check abbreviation-expanded overlap
+    exp_a = set(_tokenize(_normalize_abbreviations(name_a)))
+    exp_b = set(_tokenize(_normalize_abbreviations(name_b)))
+    if exp_a & exp_b:
+        return True
+    # Substring containment check
+    all_a = tokens_a | exp_a
+    all_b = tokens_b | exp_b
+    for a in all_a:
+        for b in all_b:
             if len(a) >= 3 and len(b) >= 3 and (a in b or b in a):
                 return True
     return False
@@ -597,13 +668,33 @@ def fuzzy_match(name, candidates, threshold):
 
     best_result = None
     best_score = 0
+
+    # Try matching with both original and abbreviation-expanded forms
+    expanded_candidates = [_normalize_abbreviations(n) for n in expanded_names]
+
     for q in query_variants:
+        q_exp = _normalize_abbreviations(q)
+        # Match against original names
         result = process.extractOne(
             q, expanded_names, scorer=fuzz.token_sort_ratio, score_cutoff=threshold,
         )
         if result and result[1] > best_score:
             best_result = result
             best_score = result[1]
+        # Match against abbreviation-expanded names
+        result_exp = process.extractOne(
+            q_exp, expanded_candidates, scorer=fuzz.token_sort_ratio, score_cutoff=threshold,
+        )
+        if result_exp and result_exp[1] > best_score:
+            best_result = (expanded_names[result_exp[2]], result_exp[1], result_exp[2])
+            best_score = result_exp[1]
+        # Also try token_set_ratio for better partial matching
+        result_set = process.extractOne(
+            q, expanded_names, scorer=fuzz.token_set_ratio, score_cutoff=threshold,
+        )
+        if result_set and result_set[1] > best_score:
+            best_result = result_set
+            best_score = result_set[1]
 
     if best_result is None:
         return None
