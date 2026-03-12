@@ -2051,7 +2051,13 @@ with tab_attrs:
             for src, match in search_class["matches"].items():
                 _sf_ids.add(str(match["id"]).strip())
             search_filter_ids = list(_sf_ids)
-            st.info(f"Filtered by search result: **{search_class['canonical_name']}**. Clear the search query in the Search tab to see all attributes.")
+            _fc1, _fc2 = st.columns([5, 1])
+            with _fc1:
+                st.info(f"Filtered by search result: **{search_class['canonical_name']}**")
+            with _fc2:
+                if st.button("Clear Filter", key="clear_filter_attrs", type="secondary", use_container_width=True):
+                    st.session_state.search_matched_class = None
+                    st.rerun()
 
             # Filter attribute dataframes
             filtered_aramco = None
@@ -2472,7 +2478,13 @@ with tab_visual:
         # Search filter: if a search match is active, show only that class
         search_class = st.session_state.search_matched_class
         if search_class:
-            st.info(f"Filtered by search result: **{search_class['canonical_name']}**. Clear the search query in the Search tab to see all connections.")
+            _fc3, _fc4 = st.columns([5, 1])
+            with _fc3:
+                st.info(f"Filtered by search result: **{search_class['canonical_name']}**")
+            with _fc4:
+                if st.button("Clear Filter", key="clear_filter_connmap", type="secondary", use_container_width=True):
+                    st.session_state.search_matched_class = None
+                    st.rerun()
             st.graphviz_chart(build_connection_graph(search_class), use_container_width=True)
             st.caption("Solid = matched. Dashed red = GAP.")
         else:
