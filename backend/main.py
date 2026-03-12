@@ -12,6 +12,10 @@ import altair as alt
 from rapidfuzz import fuzz, process
 
 import core as _core  # Framework-agnostic engine (for FastAPI migration)
+from core import (
+    FILE_TYPES, SOURCE_COLORS, ABBREVIATIONS,
+    _safe_str, _normalize_abbreviations,
+)
 
 # ──────────────────────────────────────────────────────────────────────
 # Page config
@@ -2070,8 +2074,9 @@ with tab_attrs:
                         seen.add(key)
                         desc = ""
                         if "Class_Desc" in aramco_attrs.columns:
-                            row = aramco_attrs[aramco_attrs["Class_Id"] == cid].iloc[0]
-                            desc = str(row.get("Class_Desc", ""))
+                            filtered = aramco_attrs[aramco_attrs["Class_Id"] == cid]
+                            if not filtered.empty:
+                                desc = str(filtered.iloc[0].get("Class_Desc", ""))
                         label = f"{desc} ({key})" if desc and desc != "nan" else key
                         class_options.append(label)
                         class_id_map[label] = [key]
@@ -2491,9 +2496,15 @@ with tab_batch:
     if st.button("Process Batch", type="primary"):
         items = []
         if batch_file:
-            bdf = pd.read_csv(batch_file)
-            col = "name" if "name" in bdf.columns else bdf.columns[0]
-            items = bdf[col].dropna().astype(str).tolist()
+            try:
+                bdf = pd.read_csv(batch_file)
+                if bdf.empty:
+                    st.error("CSV file is empty.")
+                else:
+                    col = "name" if "name" in bdf.columns else bdf.columns[0]
+                    items = bdf[col].dropna().astype(str).tolist()
+            except Exception as e:
+                st.error(f"Error reading CSV: {e}")
         elif batch_input.strip():
             items = [l.strip() for l in batch_input.strip().split("\n") if l.strip()]
 
@@ -2515,7 +2526,8 @@ with tab_batch:
 
             expanded_candidates = [_normalize_abbreviations(n) for n in search_names]
             results = []
-            for item in items:
+            progress = st.progress(0, text="Processing batch...")
+            for item_idx, item in enumerate(items):
                 query_variants = [item]
                 if "/" in item:
                     query_variants += [p.strip() for p in item.split("/") if p.strip()]
@@ -2544,9 +2556,13 @@ with tab_batch:
                     results.append({"Input": item, "Best Match": c["canonical_name"], "Score%": score, "Status": status, "Gap In": gaps})
                 else:
                     results.append({"Input": item, "Best Match": "—", "Score%": 0, "Status": "No Match", "Gap In": "—"})
+                progress.progress((item_idx + 1) / len(items), text=f"Processing {item_idx + 1}/{len(items)}...")
+            progress.empty()
             result_df = pd.DataFrame(results)
+            matched_count = sum(1 for r in results if r["Score%"] > 0)
+            st.success(f"Processed {len(results)} items: {matched_count} matched, {len(results) - matched_count} unmatched")
             st.dataframe(result_df, use_container_width=True, hide_index=True)
-            st.download_button("Download", data=result_df.to_csv(index=False).encode(), file_name="batch_results.csv", mime="text/csv")
+            st.download_button("Download Results", data=result_df.to_csv(index=False).encode(), file_name="batch_results.csv", mime="text/csv")
 
 
 # ══════════════════════════════════════════════════════════════════════
