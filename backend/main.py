@@ -12,6 +12,10 @@ import altair as alt
 from rapidfuzz import fuzz, process
 
 import core as _core  # Framework-agnostic engine (for FastAPI migration)
+from core import (
+    FILE_TYPES, SOURCE_COLORS, ABBREVIATIONS,
+    _safe_str, _normalize_abbreviations,
+)
 
 # ──────────────────────────────────────────────────────────────────────
 # Page config
