@@ -11,6 +11,8 @@ import streamlit as st
 import altair as alt
 from rapidfuzz import fuzz, process
 
+import core as _core  # Framework-agnostic engine (for FastAPI migration)
+
 # ──────────────────────────────────────────────────────────────────────
 # Page config
 # ──────────────────────────────────────────────────────────────────────
@@ -335,71 +337,6 @@ for k, v in DEFAULTS.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
-FILE_TYPES = {
-    "aramco":  "Saudi Aramco 9COM",
-    "cfihos":  "CFIHOS Standard",
-    "kbr":     "KBR FEED",
-    "ltc":     "LTC Contractor",
-    "sa_doc":  "SA Document",
-}
-
-SOURCE_COLORS = {
-    "aramco": "#16a34a",
-    "cfihos": "#2563eb",
-    "kbr":    "#dc2626",
-    "ltc":    "#9333ea",
-    "sa_doc": "#d97706",
-}
-
-# Industry-standard abbreviation dictionary for smarter matching
-ABBREVIATIONS = {
-    "hx": "heat exchanger",
-    "ht": "heat",
-    "xchg": "exchanger",
-    "vlv": "valve",
-    "cmp": "compressor",
-    "comp": "compressor",
-    "pmp": "pump",
-    "gen": "generator",
-    "xfmr": "transformer",
-    "sep": "separator",
-    "tnk": "tank",
-    "tk": "tank",
-    "vsl": "vessel",
-    "mtr": "motor",
-    "drv": "driver",
-    "ctrl": "control",
-    "inst": "instrument",
-    "elec": "electric",
-    "mech": "mechanical",
-    "recip": "reciprocating",
-    "centrif": "centrifugal",
-    "atm": "atmospheric",
-    "ss": "stainless steel",
-}
-
-
-def _normalize_abbreviations(text):
-    """Expand known industry abbreviations in text for better matching."""
-    words = text.lower().split()
-    expanded = []
-    for w in words:
-        clean = re.sub(r'[^a-z0-9]', '', w)
-        if clean in ABBREVIATIONS:
-            expanded.append(ABBREVIATIONS[clean])
-        else:
-            expanded.append(w)
-    return " ".join(expanded)
-
-
-def _safe_str(val):
-    """Convert value to string, treating NaN/None as empty string."""
-    if pd.isna(val):
-        return ""
-    s = str(val).strip()
-    return "" if s.lower() == "nan" else s
-
-
 def add_log(msg, level="INFO"):
     st.session_state.logs.append(f"[{level}] {msg}")
 
@@ -557,6 +494,7 @@ def read_aramco_attributes(file) -> pd.DataFrame:
     df = df.rename(columns=col_map)
     # Back-fill Name from Attribute_Desc when Name is empty/NaN
     if "Attribute_Desc" in df.columns and "Name" in df.columns:
+        df["Name"] = df["Name"].astype(object)
         mask = df["Name"].isna() | (df["Name"].astype(str).str.strip() == "") | (df["Name"].astype(str).str.lower() == "nan")
         df.loc[mask, "Name"] = df.loc[mask, "Attribute_Desc"]
     elif "Attribute_Desc" in df.columns and "Name" not in df.columns:
@@ -717,107 +655,15 @@ def classify_match(score):
 
 
 def run_harmonization():
-    """Masters = ONE unified reference. Then compare each non-master source."""
+    """Wrapper: reads session state, calls core engine, stores results."""
     masters = st.session_state.masters
     files = st.session_state.files
     threshold = st.session_state.match_threshold
 
-    # Step 1: Build unified master rows
-    if len(masters) == 1:
-        master_records = files[masters[0]]["records"]
-        merged = []
-        seen = set()
-        for r in master_records:
-            key = r["name"].strip().lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            merged.append({
-                "master_entries": {masters[0]: r},
-                "canonical_name": r["name"],
-            })
-    else:
-        m1, m2 = masters[0], masters[1]
-        m1_records = files[m1]["records"]
-        m2_records = list(files[m2]["records"])
-        m2_used = set()
-        seen = set()
-        merged = []
-
-        for r1 in m1_records:
-            key = r1["name"].strip().lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            match = fuzzy_match(r1["name"], m2_records, threshold)
-            entry = {"master_entries": {m1: r1}, "canonical_name": r1["name"]}
-            if match:
-                for i, r2 in enumerate(m2_records):
-                    if r2["id"] == match["id"] and r2["name"] == match["name"]:
-                        m2_used.add(i)
-                        break
-                match_clean = {k: v for k, v in match.items() if k != "score"}
-                entry["master_entries"][m2] = match_clean
-                entry["cross_score"] = match["score"]
-            merged.append(entry)
-
-        for i, r2 in enumerate(m2_records):
-            if i not in m2_used:
-                key = r2["name"].strip().lower()
-                if key not in seen:
-                    seen.add(key)
-                    merged.append({
-                        "master_entries": {m2: r2},
-                        "canonical_name": r2["name"],
-                    })
-
-    add_log(f"Master reference built from {masters}: {len(merged)} unique classes (threshold={threshold}%)")
-
-    # Step 2: Compare each non-master source against the unified master
-    non_masters = {k: v["records"] for k, v in files.items() if k not in masters}
-
-    harmonized = []
-    for idx, row in enumerate(merged):
-        entry = {
-            "uid": str(uuid.uuid4()),
-            "index": idx + 1,
-            "canonical_name": row["canonical_name"],
-            "master_entries": row["master_entries"],
-            "cross_score": row.get("cross_score"),
-            "matches": {},
-            "gaps": [],
-        }
-        for src, candidates in non_masters.items():
-            match = fuzzy_match(row["canonical_name"], candidates, threshold)
-            if match:
-                entry["matches"][src] = match
-            else:
-                entry["gaps"].append(src)
-        harmonized.append(entry)
-
-    add_log(f"Harmonization complete: {len(harmonized)} classes, compared against {list(non_masters.keys())}")
-
-    # Step 3: Compute reverse gaps — non-master records that matched nothing in the master
-    reverse_gaps = {}
-    for src, candidates in non_masters.items():
-        # Collect IDs of candidates that were matched by at least one master entry
-        matched_ids = set()
-        for entry in harmonized:
-            m = entry["matches"].get(src)
-            if m:
-                matched_ids.add((m["id"], m["name"]))
-        # Find candidates that were never matched
-        unmatched = []
-        for rec in candidates:
-            if (rec["id"], rec["name"]) not in matched_ids:
-                unmatched.append(rec)
-        if unmatched:
-            reverse_gaps[src] = unmatched
-    if reverse_gaps:
-        parts = [f"{FILE_TYPES.get(s, s)}: {len(recs)} extra" for s, recs in reverse_gaps.items()]
-        add_log(f"Reverse gaps (extra classes not in master): {', '.join(parts)}")
+    harmonized, reverse_gaps, logs = _core.run_harmonization(masters, files, threshold)
+    for msg in logs:
+        add_log(msg)
     st.session_state.reverse_gaps = reverse_gaps
-
     return harmonized
 
 
@@ -825,54 +671,13 @@ def run_harmonization():
 # Demo data
 # ──────────────────────────────────────────────────────────────────────
 def load_demo_data():
-    demo = {
-        "aramco": [
-            {"id": "AC-001", "name": "Centrifugal Pump", "cfihos_ref": "CF-101", "source": "aramco"},
-            {"id": "AC-002", "name": "Shell and Tube Heat Exchanger", "cfihos_ref": "CF-201", "source": "aramco"},
-            {"id": "AC-003", "name": "Pressure Vessel", "cfihos_ref": "CF-301", "source": "aramco"},
-            {"id": "AC-004", "name": "Control Valve", "cfihos_ref": "CF-401", "source": "aramco"},
-            {"id": "AC-005", "name": "Electric Motor", "cfihos_ref": "CF-501", "source": "aramco"},
-            {"id": "AC-006", "name": "Air Cooled Heat Exchanger", "cfihos_ref": "CF-202", "source": "aramco"},
-            {"id": "AC-007", "name": "Reciprocating Compressor", "cfihos_ref": "CF-601", "source": "aramco"},
-            {"id": "AC-008", "name": "Storage Tank", "cfihos_ref": "CF-701", "source": "aramco"},
-        ],
-        "cfihos": [
-            {"id": "CF-101", "name": "Centrifugal Pump", "source": "cfihos"},
-            {"id": "CF-201", "name": "Shell and Tube Heat Exchanger", "source": "cfihos"},
-            {"id": "CF-301", "name": "Pressure Vessel", "source": "cfihos"},
-            {"id": "CF-401", "name": "Control Valve", "source": "cfihos"},
-            {"id": "CF-501", "name": "Electric Motor", "source": "cfihos"},
-            {"id": "CF-202", "name": "Air Cooled Exchanger", "source": "cfihos"},
-            {"id": "CF-601", "name": "Reciprocating Compressor", "source": "cfihos"},
-            {"id": "CF-701", "name": "Atmospheric Storage Tank", "source": "cfihos"},
-        ],
-        "kbr": [
-            {"id": "KBR-P01", "name": "Centrifugal Pump", "discipline": "Mechanical", "source": "kbr"},
-            {"id": "KBR-H01", "name": "Shell & Tube Heat Exchanger", "discipline": "Mechanical", "source": "kbr"},
-            {"id": "KBR-V01", "name": "Pressure Vessel", "discipline": "Mechanical", "source": "kbr"},
-            {"id": "KBR-CV1", "name": "Control Valve Assembly", "discipline": "Instrumentation", "source": "kbr"},
-            {"id": "KBR-E01", "name": "Electric Motor Driver", "discipline": "Electrical", "source": "kbr"},
-            {"id": "KBR-H02", "name": "Air Cooled Heat Exchanger", "discipline": "Mechanical", "source": "kbr"},
-            {"id": "KBR-C01", "name": "Reciprocating Compressor", "discipline": "Mechanical", "source": "kbr"},
-            # Extra KBR classes not in Aramco (for enrichment suggestion demo)
-            {"id": "KBR-T01", "name": "Cooling Tower", "discipline": "Mechanical", "source": "kbr"},
-            {"id": "KBR-F01", "name": "Flare Stack", "discipline": "Process", "source": "kbr"},
-            {"id": "KBR-D01", "name": "Drum Separator", "discipline": "Process", "source": "kbr"},
-        ],
-        "ltc": [
-            {"id": "LTC-001", "name": "Centrifugal Pump Unit", "source": "ltc"},
-            {"id": "LTC-002", "name": "Shell and Tube HX", "source": "ltc"},
-            {"id": "LTC-003", "name": "Pressure Vessel", "source": "ltc"},
-            {"id": "LTC-004", "name": "Control Valve", "source": "ltc"},
-            {"id": "LTC-005", "name": "Electric Motor", "source": "ltc"},
-            {"id": "LTC-006", "name": "Air Cooled Exchanger", "source": "ltc"},
-        ],
-        "sa_doc": [
-            {"id": "SA-A01", "name": "Design Pressure", "cfihos_name": "Design Pressure", "source": "sa_doc"},
-            {"id": "SA-A02", "name": "Design Temperature", "cfihos_name": "Design Temperature", "source": "sa_doc"},
-            {"id": "SA-A03", "name": "Material of Construction", "cfihos_name": "Material", "source": "sa_doc"},
-        ],
-    }
+    demo = _core.get_demo_data()
+    # Add sa_doc which is specific to the full demo
+    demo["sa_doc"] = [
+        {"id": "SA-A01", "name": "Design Pressure", "cfihos_name": "Design Pressure", "source": "sa_doc"},
+        {"id": "SA-A02", "name": "Design Temperature", "cfihos_name": "Design Temperature", "source": "sa_doc"},
+        {"id": "SA-A03", "name": "Material of Construction", "cfihos_name": "Material", "source": "sa_doc"},
+    ]
     for key, records in demo.items():
         st.session_state.files[key] = {"filename": f"demo_{key}.xlsx", "records": records}
     add_log("Demo data loaded for all 5 sources")
@@ -882,64 +687,8 @@ def load_demo_data():
 # Export — clean organized Excel
 # ──────────────────────────────────────────────────────────────────────
 def build_export_df(classes):
-    """Build export DataFrame.
-
-    Layout:
-      # | MASTER REFERENCE (one block) | Source1 columns | Source2 columns | Gap In
-      Masters are shown together as one reference block.
-      Each non-master source gets: ID | Name | Match% | Status
-      Last column: "Gap In" lists which sources are missing, or "No Gaps".
-    """
-    masters = st.session_state.masters
-    non_master_sources = set()
-    for c in classes:
-        non_master_sources.update(c["matches"].keys())
-        non_master_sources.update(c["gaps"])
-    non_master_sources = sorted(non_master_sources)
-
-    rows = []
-    for c in classes:
-        gap_count = len(c["gaps"])
-
-        row = {"#": c["index"]}
-
-        # --- MASTER REFERENCE block ---
-        for m in masters:
-            label = FILE_TYPES.get(m, m)
-            me = c["master_entries"].get(m)
-            row[f"Master ({label}) ID"] = me["id"] if me else ""
-            row[f"Master ({label}) Name"] = me["name"] if me else ""
-
-        if len(masters) == 2:
-            cs = c.get("cross_score")
-            row["Masters Cross-Match%"] = cs if cs is not None else ""
-
-        # --- Each non-master source ---
-        for s in non_master_sources:
-            label = FILE_TYPES.get(s, s)
-            m = c["matches"].get(s)
-            if m:
-                status, _ = classify_match(m["score"])
-                row[f"{label} ID"] = m["id"]
-                row[f"{label} Name"] = m["name"]
-                row[f"{label} Match%"] = m["score"]
-                row[f"{label} Status"] = status
-            else:
-                row[f"{label} ID"] = ""
-                row[f"{label} Name"] = ""
-                row[f"{label} Match%"] = ""
-                row[f"{label} Status"] = "GAP"
-
-        # --- Gap summary ---
-        if gap_count == 0:
-            row["Gap In"] = "No Gaps"
-        else:
-            row["Gap In"] = " | ".join(FILE_TYPES.get(g, g) for g in c["gaps"])
-        row["Gap Count"] = gap_count
-
-        rows.append(row)
-
-    return pd.DataFrame(rows)
+    """Wrapper: calls core build_export_df with session state masters."""
+    return _core.build_export_df(classes, st.session_state.masters)
 
 
 def build_excel_bytes(classes):
@@ -2336,7 +2085,7 @@ with tab_attrs:
 
         attr_view = st.radio(
             "View mode",
-            ["Browse by Class", "Full Aramco Attributes", "Full LTC Attributes", "Attribute Comparison"],
+            ["Browse by Class", "Discipline-wise Attributes", "Full Aramco Attributes", "Full LTC Attributes", "Attribute Comparison"],
             horizontal=True,
         )
 
@@ -2382,6 +2131,161 @@ with tab_attrs:
                             st.caption(f"{len(subset)} attributes")
                     else:
                         st.info("LTC attribute data not loaded.")
+
+        elif attr_view == "Discipline-wise Attributes":
+            # Collect discipline info from multiple sources
+            # 1) KBR classes have discipline at class level
+            # 2) Attribute sheets may have Discipline column
+            discipline_classes = {}  # discipline -> list of class names
+            if classes:
+                for c in classes:
+                    disc = None
+                    # Check KBR master entry for discipline
+                    for m in st.session_state.masters:
+                        me = c["master_entries"].get(m)
+                        if me and me.get("discipline"):
+                            disc = me["discipline"]
+                            break
+                    # Check matches for KBR discipline
+                    if not disc:
+                        for src, match in c["matches"].items():
+                            if match.get("discipline"):
+                                disc = match["discipline"]
+                                break
+                    if not disc:
+                        disc = "Unclassified"
+                    discipline_classes.setdefault(disc, []).append(c["canonical_name"])
+
+            # Build discipline -> attributes mapping from attribute data
+            disc_aramco = {}
+            disc_ltc = {}
+
+            if aramco_attrs is not None and not aramco_attrs.empty:
+                disc_col = "Discipline" if "Discipline" in aramco_attrs.columns else None
+                class_desc_col = "Class_Desc" if "Class_Desc" in aramco_attrs.columns else None
+                if disc_col:
+                    for disc_val in aramco_attrs[disc_col].dropna().unique():
+                        dv = str(disc_val).strip()
+                        if dv and dv.lower() != "nan":
+                            subset = aramco_attrs[aramco_attrs[disc_col].astype(str).str.strip() == dv]
+                            disc_aramco[dv] = subset
+                # Also group by Class_Id if no discipline column
+                if not disc_col and "Class_Id" in aramco_attrs.columns:
+                    disc_aramco["All"] = aramco_attrs
+
+            if ltc_attrs is not None and not ltc_attrs.empty:
+                disc_col = "Discipline" if "Discipline" in ltc_attrs.columns else None
+                if disc_col:
+                    for disc_val in ltc_attrs[disc_col].dropna().unique():
+                        dv = str(disc_val).strip()
+                        if dv and dv.lower() != "nan":
+                            subset = ltc_attrs[ltc_attrs[disc_col].astype(str).str.strip() == dv]
+                            disc_ltc[dv] = subset
+                if not disc_col and "Class_Id" in ltc_attrs.columns:
+                    disc_ltc["All"] = ltc_attrs
+
+            # Merge all discipline names
+            all_disciplines = sorted(set(list(discipline_classes.keys()) + list(disc_aramco.keys()) + list(disc_ltc.keys())))
+
+            if not all_disciplines:
+                st.warning("No discipline information found. Upload files with discipline data (KBR FEED or attribute sheets with Discipline column).")
+            else:
+                # Summary metrics
+                st.markdown("#### Discipline Summary")
+                summary_data = []
+                for disc in all_disciplines:
+                    n_classes = len(discipline_classes.get(disc, []))
+                    n_aramco_attrs = len(disc_aramco[disc]) if disc in disc_aramco else 0
+                    n_ltc_attrs = len(disc_ltc[disc]) if disc in disc_ltc else 0
+                    summary_data.append({
+                        "Discipline": disc,
+                        "Equipment Classes": n_classes,
+                        "Aramco Attributes": n_aramco_attrs,
+                        "LTC Attributes": n_ltc_attrs,
+                        "Total Attributes": n_aramco_attrs + n_ltc_attrs,
+                    })
+                summary_df = pd.DataFrame(summary_data)
+                st.dataframe(summary_df, use_container_width=True, hide_index=True)
+
+                st.divider()
+
+                # Discipline selector
+                selected_disc = st.selectbox("Select Discipline", all_disciplines, key="disc_select")
+                if selected_disc:
+                    # Show equipment classes in this discipline
+                    disc_class_list = discipline_classes.get(selected_disc, [])
+                    if disc_class_list:
+                        st.markdown(f"**Equipment Classes in {selected_disc}** ({len(disc_class_list)}):")
+                        for cn in sorted(disc_class_list):
+                            st.markdown(f"- {cn}")
+                    else:
+                        st.info(f"No harmonized equipment classes tagged under '{selected_disc}'.")
+
+                    st.divider()
+
+                    # Show Aramco attributes for this discipline
+                    col_a, col_l = st.columns(2)
+                    with col_a:
+                        st.markdown(f"**Aramco Attributes — {selected_disc}**")
+                        if selected_disc in disc_aramco:
+                            subset = disc_aramco[selected_disc]
+                            display_cols = [c for c in ["Class_Id", "Class_Desc", "Attribute_Id", "Name",
+                                                         "Attribute_Desc", "Presence", "Size",
+                                                         "UomClassId", "ValidationRule"] if c in subset.columns]
+                            st.dataframe(subset[display_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
+                            st.caption(f"{len(subset)} attributes")
+
+                            # Unique attribute names in this discipline
+                            if "Name" in subset.columns:
+                                unique_attrs = sorted(subset["Name"].dropna().unique())
+                                with st.expander(f"Unique Attribute Names ({len(unique_attrs)})"):
+                                    for a in unique_attrs:
+                                        st.markdown(f"- {a}")
+                        else:
+                            st.info("No Aramco attributes for this discipline.")
+
+                    with col_l:
+                        st.markdown(f"**LTC Attributes — {selected_disc}**")
+                        if selected_disc in disc_ltc:
+                            subset = disc_ltc[selected_disc]
+                            display_cols = [c for c in ["Class_Id", "Name", "Description",
+                                                         "Presence", "Size", "UomClassId",
+                                                         "ValidationRule", "Aspect"] if c in subset.columns]
+                            st.dataframe(subset[display_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
+                            st.caption(f"{len(subset)} attributes")
+
+                            if "Name" in subset.columns:
+                                unique_attrs = sorted(subset["Name"].dropna().unique())
+                                with st.expander(f"Unique Attribute Names ({len(unique_attrs)})"):
+                                    for a in unique_attrs:
+                                        st.markdown(f"- {a}")
+                        else:
+                            st.info("No LTC attributes for this discipline.")
+
+                    # Cross-source attribute gap for this discipline
+                    if selected_disc in disc_aramco and selected_disc in disc_ltc:
+                        st.divider()
+                        st.markdown(f"**Attribute Gap Analysis — {selected_disc}**")
+                        a_names = set(disc_aramco[selected_disc]["Name"].dropna().str.strip().str.lower()) if "Name" in disc_aramco[selected_disc].columns else set()
+                        l_names = set(disc_ltc[selected_disc]["Name"].dropna().str.strip().str.lower()) if "Name" in disc_ltc[selected_disc].columns else set()
+                        common = a_names & l_names
+                        only_a = a_names - l_names
+                        only_l = l_names - a_names
+                        gap_cols = st.columns(3)
+                        with gap_cols[0]:
+                            st.metric("Common", len(common))
+                        with gap_cols[1]:
+                            st.metric("Only in Aramco", len(only_a))
+                        with gap_cols[2]:
+                            st.metric("Only in LTC", len(only_l))
+                        if only_a:
+                            with st.expander(f"Attributes only in Aramco ({len(only_a)})"):
+                                for n in sorted(only_a):
+                                    st.markdown(f"- {n}")
+                        if only_l:
+                            with st.expander(f"Attributes only in LTC ({len(only_l)})"):
+                                for n in sorted(only_l):
+                                    st.markdown(f"- {n}")
 
         elif attr_view == "Full Aramco Attributes":
             if aramco_attrs is not None:
@@ -2517,15 +2421,25 @@ with tab_search:
                     search_names.append(part)
                     search_idx_map.append(ci)
 
-        # Try token_set_ratio first (better for subset queries like "Junction Box")
-        # then fall back to token_sort_ratio
+        # Match with dual scorer + abbreviation expansion
+        expanded_candidates = [_normalize_abbreviations(n) for n in search_names]
+        query_variants = [query]
+        if "/" in query:
+            query_variants += [p.strip() for p in query.split("/") if p.strip()]
+
         best_result = None
         best_score = 0
-        for scorer in (fuzz.token_set_ratio, fuzz.token_sort_ratio):
-            result = process.extractOne(query, search_names, scorer=scorer)
-            if result and result[1] > best_score:
-                best_result = result
-                best_score = result[1]
+        for q in query_variants:
+            q_exp = _normalize_abbreviations(q)
+            for scorer in (fuzz.token_set_ratio, fuzz.token_sort_ratio):
+                result = process.extractOne(q, search_names, scorer=scorer)
+                if result and result[1] > best_score:
+                    best_result = result
+                    best_score = result[1]
+                result_exp = process.extractOne(q_exp, expanded_candidates, scorer=scorer)
+                if result_exp and result_exp[1] > best_score:
+                    best_result = (search_names[result_exp[2]], result_exp[1], result_exp[2])
+                    best_score = result_exp[1]
 
         if best_result:
             matched_name, score, exp_idx = best_result
@@ -2588,16 +2502,46 @@ with tab_batch:
         elif not st.session_state.classes:
             st.error("Run harmonization first.")
         else:
-            names = [c["canonical_name"] for c in st.session_state.classes]
+            # Build expanded search index with compound name parts
+            search_names = []
+            search_idx_map = []
+            for ci, c in enumerate(st.session_state.classes):
+                search_names.append(c["canonical_name"])
+                search_idx_map.append(ci)
+                if "/" in c["canonical_name"]:
+                    for part in [p.strip() for p in c["canonical_name"].split("/") if p.strip()]:
+                        search_names.append(part)
+                        search_idx_map.append(ci)
+
+            expanded_candidates = [_normalize_abbreviations(n) for n in search_names]
             results = []
             for item in items:
-                match = process.extractOne(item, names, scorer=fuzz.token_sort_ratio)
-                if match:
-                    name, score, idx = match
-                    c = st.session_state.classes[idx]
-                    status, _ = classify_match(int(round(score)))
+                query_variants = [item]
+                if "/" in item:
+                    query_variants += [p.strip() for p in item.split("/") if p.strip()]
+
+                best_result = None
+                best_score = 0
+                for q in query_variants:
+                    q_exp = _normalize_abbreviations(q)
+                    for scorer in (fuzz.token_sort_ratio, fuzz.token_set_ratio):
+                        result = process.extractOne(q, search_names, scorer=scorer)
+                        if result and result[1] > best_score:
+                            best_result = result
+                            best_score = result[1]
+                        result_exp = process.extractOne(q_exp, expanded_candidates, scorer=scorer)
+                        if result_exp and result_exp[1] > best_score:
+                            best_result = (search_names[result_exp[2]], result_exp[1], result_exp[2])
+                            best_score = result_exp[1]
+
+                if best_result and best_score >= 50:
+                    matched_name, score, exp_idx = best_result
+                    orig_idx = search_idx_map[exp_idx]
+                    c = st.session_state.classes[orig_idx]
+                    score = int(round(score))
+                    status, _ = classify_match(score)
                     gaps = ", ".join(FILE_TYPES.get(g, g) for g in c["gaps"]) or "No Gaps"
-                    results.append({"Input": item, "Best Match": name, "Score%": int(round(score)), "Status": status, "Gap In": gaps})
+                    results.append({"Input": item, "Best Match": c["canonical_name"], "Score%": score, "Status": status, "Gap In": gaps})
                 else:
                     results.append({"Input": item, "Best Match": "—", "Score%": 0, "Status": "No Match", "Gap In": "—"})
             result_df = pd.DataFrame(results)
