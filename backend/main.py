@@ -2074,8 +2074,9 @@ with tab_attrs:
                         seen.add(key)
                         desc = ""
                         if "Class_Desc" in aramco_attrs.columns:
-                            row = aramco_attrs[aramco_attrs["Class_Id"] == cid].iloc[0]
-                            desc = str(row.get("Class_Desc", ""))
+                            filtered = aramco_attrs[aramco_attrs["Class_Id"] == cid]
+                            if not filtered.empty:
+                                desc = str(filtered.iloc[0].get("Class_Desc", ""))
                         label = f"{desc} ({key})" if desc and desc != "nan" else key
                         class_options.append(label)
                         class_id_map[label] = [key]
