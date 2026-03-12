@@ -336,6 +336,7 @@ DEFAULTS = {
     "aramco_attrs": None,
     "ltc_attrs": None,
     "reverse_gaps": {},
+    "search_matched_class": None,
 }
 for k, v in DEFAULTS.items():
     if k not in st.session_state:
@@ -2037,6 +2038,27 @@ with tab_attrs:
         </div>
         """, unsafe_allow_html=True)
 
+        # Search filter: if a search match is active, filter attributes to that class
+        search_class = st.session_state.search_matched_class
+        search_filter_ids = None
+        if search_class:
+            # Collect all Class_Ids for the matched class
+            _sf_ids = set()
+            for m in st.session_state.masters:
+                me = search_class["master_entries"].get(m)
+                if me:
+                    _sf_ids.add(str(me["id"]).strip())
+            for src, match in search_class["matches"].items():
+                _sf_ids.add(str(match["id"]).strip())
+            search_filter_ids = list(_sf_ids)
+            st.info(f"Filtered by search result: **{search_class['canonical_name']}**. Clear the search query in the Search tab to see all attributes.")
+
+            # Apply filter to attribute dataframes for this tab
+            if aramco_attrs is not None and not aramco_attrs.empty and "Class_Id" in aramco_attrs.columns:
+                aramco_attrs = aramco_attrs[aramco_attrs["Class_Id"].astype(str).str.strip().isin(search_filter_ids)]
+            if ltc_attrs is not None and not ltc_attrs.empty and "Class_Id" in ltc_attrs.columns:
+                ltc_attrs = ltc_attrs[ltc_attrs["Class_Id"].astype(str).str.strip().isin(search_filter_ids)]
+
         # Show counts
         attr_cols = st.columns(2)
         with attr_cols[0]:
@@ -2138,10 +2160,10 @@ with tab_attrs:
                         st.info("LTC attribute data not loaded.")
 
         elif attr_view == "Discipline-wise Attributes":
-            # Collect discipline info from multiple sources
-            # 1) KBR classes have discipline at class level
-            # 2) Attribute sheets may have Discipline column
+            # Collect discipline info from harmonized classes
+            # Each class gets a discipline from KBR master or match sources
             discipline_classes = {}  # discipline -> list of class names
+            discipline_class_ids = {}  # discipline -> set of class_ids (for attribute lookup)
             if classes:
                 for c in classes:
                     disc = None
@@ -2160,34 +2182,30 @@ with tab_attrs:
                     if not disc:
                         disc = "Unclassified"
                     discipline_classes.setdefault(disc, []).append(c["canonical_name"])
+                    # Collect all Class_Ids for this class entry
+                    _ids = discipline_class_ids.setdefault(disc, set())
+                    for m in st.session_state.masters:
+                        me = c["master_entries"].get(m)
+                        if me:
+                            _ids.add(str(me["id"]).strip())
+                    for src, match in c["matches"].items():
+                        _ids.add(str(match["id"]).strip())
 
-            # Build discipline -> attributes mapping from attribute data
+            # Build discipline -> attributes mapping via Class_Id linkage
             disc_aramco = {}
             disc_ltc = {}
 
-            if aramco_attrs is not None and not aramco_attrs.empty:
-                disc_col = "Discipline" if "Discipline" in aramco_attrs.columns else None
-                class_desc_col = "Class_Desc" if "Class_Desc" in aramco_attrs.columns else None
-                if disc_col:
-                    for disc_val in aramco_attrs[disc_col].dropna().unique():
-                        dv = str(disc_val).strip()
-                        if dv and dv.lower() != "nan":
-                            subset = aramco_attrs[aramco_attrs[disc_col].astype(str).str.strip() == dv]
-                            disc_aramco[dv] = subset
-                # Also group by Class_Id if no discipline column
-                if not disc_col and "Class_Id" in aramco_attrs.columns:
-                    disc_aramco["All"] = aramco_attrs
-
-            if ltc_attrs is not None and not ltc_attrs.empty:
-                disc_col = "Discipline" if "Discipline" in ltc_attrs.columns else None
-                if disc_col:
-                    for disc_val in ltc_attrs[disc_col].dropna().unique():
-                        dv = str(disc_val).strip()
-                        if dv and dv.lower() != "nan":
-                            subset = ltc_attrs[ltc_attrs[disc_col].astype(str).str.strip() == dv]
-                            disc_ltc[dv] = subset
-                if not disc_col and "Class_Id" in ltc_attrs.columns:
-                    disc_ltc["All"] = ltc_attrs
+            for disc, ids in discipline_class_ids.items():
+                if aramco_attrs is not None and not aramco_attrs.empty and "Class_Id" in aramco_attrs.columns:
+                    mask = aramco_attrs["Class_Id"].astype(str).str.strip().isin(ids)
+                    subset = aramco_attrs[mask]
+                    if not subset.empty:
+                        disc_aramco[disc] = subset
+                if ltc_attrs is not None and not ltc_attrs.empty and "Class_Id" in ltc_attrs.columns:
+                    mask = ltc_attrs["Class_Id"].astype(str).str.strip().isin(ids)
+                    subset = ltc_attrs[mask]
+                    if not subset.empty:
+                        disc_ltc[disc] = subset
 
             # Merge all discipline names
             all_disciplines = sorted(set(list(discipline_classes.keys()) + list(disc_aramco.keys()) + list(disc_ltc.keys())))
@@ -2385,18 +2403,26 @@ with tab_visual:
             </p>
         </div>
         """, unsafe_allow_html=True)
-        view_mode = st.radio("View", ["Per-class detail", "Overview (first 20)"], horizontal=True)
-        if view_mode == "Per-class detail":
-            options = [f"{c['index']}. {c['canonical_name']}" for c in classes]
-            selected = st.selectbox("Select equipment class", options)
-            if selected:
-                idx = int(selected.split(".")[0]) - 1
-                st.graphviz_chart(build_connection_graph(classes[idx]), use_container_width=True)
-                st.caption("Solid = matched. Dashed red = GAP.")
+
+        # Search filter: if a search match is active, show only that class
+        search_class = st.session_state.search_matched_class
+        if search_class:
+            st.info(f"Filtered by search result: **{search_class['canonical_name']}**. Clear the search query in the Search tab to see all connections.")
+            st.graphviz_chart(build_connection_graph(search_class), use_container_width=True)
+            st.caption("Solid = matched. Dashed red = GAP.")
         else:
-            st.graphviz_chart(build_overview_graph(classes, 20), use_container_width=True)
-            if len(classes) > 20:
-                st.caption(f"First 20 of {len(classes)}.")
+            view_mode = st.radio("View", ["Per-class detail", "Overview (first 20)"], horizontal=True)
+            if view_mode == "Per-class detail":
+                options = [f"{c['index']}. {c['canonical_name']}" for c in classes]
+                selected = st.selectbox("Select equipment class", options)
+                if selected:
+                    idx = int(selected.split(".")[0]) - 1
+                    st.graphviz_chart(build_connection_graph(classes[idx]), use_container_width=True)
+                    st.caption("Solid = matched. Dashed red = GAP.")
+            else:
+                st.graphviz_chart(build_overview_graph(classes, 20), use_container_width=True)
+                if len(classes) > 20:
+                    st.caption(f"First 20 of {len(classes)}.")
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -2451,11 +2477,15 @@ with tab_search:
             orig_idx = search_idx_map[exp_idx]
             score = int(round(score))
             c = st.session_state.classes[orig_idx]
+            # Store matched class so Attributes & Connection tabs can filter
+            st.session_state.search_matched_class = c
             status, _ = classify_match(score)
             color = "green" if score >= 90 else "orange" if score >= 75 else "red"
 
             name = c["canonical_name"]
             st.markdown(f"### :{color}[**{name}** — {score}% ({status})]")
+
+            st.info(f"The **Attributes** and **Connection Map** tabs are now filtered to show only data for **{name}**.")
 
             col_l, col_r = st.columns(2)
             with col_l:
@@ -2474,8 +2504,13 @@ with tab_search:
 
             st.divider()
             st.graphviz_chart(build_connection_graph(c), use_container_width=True)
+        else:
+            st.session_state.search_matched_class = None
     elif query:
         st.warning("Run harmonization first.")
+    else:
+        # No query entered — clear search filter
+        st.session_state.search_matched_class = None
 
 
 # ══════════════════════════════════════════════════════════════════════
