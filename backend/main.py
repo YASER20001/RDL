@@ -1724,6 +1724,299 @@ def _build_discipline_summary_excel(
     return buf.getvalue()
 
 
+def _build_attribute_analysis_excel(all_disc, aa_by_disc, la_by_disc):
+    """Build a standalone attribute analysis Excel — one sheet per discipline, no harmonization needed."""
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+    from openpyxl.utils import get_column_letter
+    import openpyxl
+
+    kbr_primary = "003087"
+    kbr_dark = "001D54"
+    kbr_accent = "00A3E0"
+    navy = "1B3A5C"
+    white = "FFFFFF"
+    light_gray = "F8FAFC"
+    border_gray = "E2E8F0"
+    green_bg = "D1FAE5"
+    green_fg = "065F46"
+    blue_bg = "DBEAFE"
+    blue_fg = "1E40AF"
+    orange_bg = "FFEDD5"
+    orange_fg = "9A3412"
+
+    thin_border = Border(
+        left=Side(style="thin", color=border_gray),
+        right=Side(style="thin", color=border_gray),
+        top=Side(style="thin", color=border_gray),
+        bottom=Side(style="thin", color=border_gray),
+    )
+    header_font = Font(name="Calibri", size=10, bold=True, color=white)
+    header_fill = PatternFill("solid", fgColor=navy)
+    header_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    data_font = Font(name="Calibri", size=10, color=navy)
+    data_align = Alignment(horizontal="left", vertical="center")
+    center_align = Alignment(horizontal="center", vertical="center")
+    alt_fill = PatternFill("solid", fgColor=light_gray)
+    white_fill = PatternFill("solid", fgColor=white)
+    logo_font = Font(name="Calibri", size=14, bold=True, color=kbr_accent)
+    logo_fill = PatternFill("solid", fgColor=kbr_dark)
+    title_font = Font(name="Calibri", size=16, bold=True, color=white)
+    title_fill = PatternFill("solid", fgColor=kbr_primary)
+    sub_font = Font(name="Calibri", size=10, color=white)
+    sub_fill = PatternFill("solid", fgColor=kbr_dark)
+    section_fill = PatternFill("solid", fgColor="2563EB")
+    section_font = Font(name="Calibri", size=10, bold=True, color=white)
+
+    def _title_rows(ws, title, subtitle, nc):
+        nc = max(nc, 2)
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=nc)
+        lc = ws.cell(row=1, column=1, value="  KBR-AMCDE  |  RDL Data Harmonizer v3.0")
+        lc.font = logo_font; lc.fill = logo_fill
+        lc.alignment = Alignment(horizontal="left", vertical="center")
+        ws.row_dimensions[1].height = 30
+        ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=nc)
+        t = ws.cell(row=2, column=1, value=f"  {title}")
+        t.font = title_font; t.fill = title_fill
+        t.alignment = Alignment(horizontal="left", vertical="center")
+        ws.row_dimensions[2].height = 36
+        ws.merge_cells(start_row=3, start_column=1, end_row=3, end_column=nc)
+        s = ws.cell(row=3, column=1, value=f"  {subtitle}")
+        s.font = sub_font; s.fill = sub_fill
+        s.alignment = Alignment(horizontal="left", vertical="center")
+        ws.row_dimensions[3].height = 24
+
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+
+    # ── Overview sheet ──
+    ws_ov = wb.create_sheet("Overview")
+    total_a = sum(len(g) for g in aa_by_disc.values())
+    total_l = sum(len(g) for g in la_by_disc.values())
+    _title_rows(ws_ov, "Attribute Analysis by Discipline",
+                f"{len(all_disc)} disciplines  |  Aramco: {total_a} attributes  |  LTC: {total_l} attributes", 12)
+
+    ov_headers = ["Discipline", "Aramco Rows", "Aramco Unique", "Aramco Mandatory", "Aramco Optional",
+                  "LTC Rows", "LTC Unique", "LTC Mandatory", "LTC Optional",
+                  "Common Attrs", "Only Aramco", "Only LTC"]
+    for ci, h in enumerate(ov_headers, 1):
+        cell = ws_ov.cell(row=4, column=ci, value=h)
+        cell.font = header_font; cell.fill = header_fill
+        cell.alignment = header_align; cell.border = thin_border
+    ws_ov.row_dimensions[4].height = 28
+    ws_ov.auto_filter.ref = f"A4:{get_column_letter(len(ov_headers))}4"
+    ws_ov.freeze_panes = "A5"
+
+    for ri, disc in enumerate(all_disc, 5):
+        is_alt = (ri % 2 == 0)
+        aa_sub = aa_by_disc.get(disc)
+        la_sub = la_by_disc.get(disc)
+        n_aa = len(aa_sub) if aa_sub is not None else 0
+        n_la = len(la_sub) if la_sub is not None else 0
+        u_aa = len(aa_sub["Name"].dropna().unique()) if aa_sub is not None and "Name" in aa_sub.columns else 0
+        u_la = len(la_sub["Name"].dropna().unique()) if la_sub is not None and "Name" in la_sub.columns else 0
+        mand_aa = opt_aa = mand_la = opt_la = 0
+        if aa_sub is not None and "Presence" in aa_sub.columns:
+            pv = aa_sub["Presence"].fillna("").astype(str).str.strip().str.lower()
+            mand_aa = int(pv.isin(["mandatory", "required", "m"]).sum())
+            opt_aa = int(pv.isin(["optional", "o"]).sum())
+        if la_sub is not None and "Presence" in la_sub.columns:
+            pv = la_sub["Presence"].fillna("").astype(str).str.strip().str.lower()
+            mand_la = int(pv.isin(["mandatory", "required", "m"]).sum())
+            opt_la = int(pv.isin(["optional", "o"]).sum())
+        a_names = set(aa_sub["Name"].dropna().str.strip().str.lower()) if aa_sub is not None and "Name" in aa_sub.columns else set()
+        l_names = set(la_sub["Name"].dropna().str.strip().str.lower()) if la_sub is not None and "Name" in la_sub.columns else set()
+        vals = [disc, n_aa, u_aa, mand_aa, opt_aa, n_la, u_la, mand_la, opt_la,
+                len(a_names & l_names), len(a_names - l_names), len(l_names - a_names)]
+        for ci, val in enumerate(vals, 1):
+            cell = ws_ov.cell(row=ri, column=ci, value=val)
+            cell.font = data_font
+            cell.alignment = center_align if ci > 1 else data_align
+            cell.border = thin_border
+            cell.fill = alt_fill if is_alt else white_fill
+
+    ov_widths = [22, 12, 13, 16, 14, 10, 11, 14, 12, 13, 12, 10]
+    for ci, w in enumerate(ov_widths, 1):
+        ws_ov.column_dimensions[get_column_letter(ci)].width = w
+
+    # ── Per-discipline sheets ──
+    aramco_cols = ["Class_Id", "Class_Desc", "Attribute_Id", "Name", "Attribute_Desc",
+                   "Presence", "Size", "UomClassId", "UomRequire", "ValidationRule", "Group_Id"]
+    ltc_cols = ["Class_Id", "Name", "Description", "Presence", "Size",
+                "UomClassId", "UomRequire", "ValidationRule", "ValidationType", "MaxOccur", "Aspect"]
+
+    for disc in all_disc:
+        sheet_name = disc[:28].replace("/", "-").replace("\\", "-").replace("*", "").replace("?", "").replace("[", "").replace("]", "")
+        # Avoid duplicate sheet names
+        if sheet_name in [s.title for s in wb.worksheets]:
+            sheet_name = sheet_name[:25] + "..."
+        ws = wb.create_sheet(sheet_name)
+
+        aa_sub = aa_by_disc.get(disc)
+        la_sub = la_by_disc.get(disc)
+        n_aa = len(aa_sub) if aa_sub is not None else 0
+        n_la = len(la_sub) if la_sub is not None else 0
+
+        _title_rows(ws, f"Discipline: {disc}",
+                    f"Aramco: {n_aa} attributes  |  LTC: {n_la} attributes", 11)
+
+        row_num = 4
+
+        # ── Aramco attributes ──
+        if aa_sub is not None and not aa_sub.empty:
+            avail = [c for c in aramco_cols if c in aa_sub.columns]
+            nc = len(avail)
+
+            ws.merge_cells(start_row=row_num, start_column=1, end_row=row_num, end_column=max(nc, 5))
+            sep = ws.cell(row=row_num, column=1, value=f"  ARAMCO FUNCTIONAL ATTRIBUTES ({n_aa} rows)")
+            sep.font = section_font; sep.fill = section_fill
+            sep.alignment = Alignment(horizontal="left", vertical="center")
+            ws.row_dimensions[row_num].height = 26
+            row_num += 1
+
+            for ci, h in enumerate(avail, 1):
+                cell = ws.cell(row=row_num, column=ci, value=h)
+                cell.font = header_font; cell.fill = header_fill
+                cell.alignment = header_align; cell.border = thin_border
+            ws.row_dimensions[row_num].height = 24
+            row_num += 1
+
+            for _, attr_row in aa_sub.iterrows():
+                is_alt = (row_num % 2 == 0)
+                for ci, col_name in enumerate(avail, 1):
+                    val = attr_row.get(col_name, "")
+                    if pd.isna(val):
+                        val = ""
+                    cell = ws.cell(row=row_num, column=ci, value=str(val))
+                    cell.font = data_font; cell.alignment = data_align; cell.border = thin_border
+                    if col_name == "Presence":
+                        sv = str(val).strip().lower()
+                        if sv in ("mandatory", "required", "m"):
+                            cell.fill = PatternFill("solid", fgColor=green_bg)
+                            cell.font = Font(name="Calibri", size=10, bold=True, color=green_fg)
+                        elif sv in ("optional", "o"):
+                            cell.fill = PatternFill("solid", fgColor=blue_bg)
+                            cell.font = Font(name="Calibri", size=10, color=blue_fg)
+                        else:
+                            cell.fill = alt_fill if is_alt else white_fill
+                    else:
+                        cell.fill = alt_fill if is_alt else white_fill
+                row_num += 1
+
+            # Presence summary row
+            row_num += 1
+            if "Presence" in aa_sub.columns:
+                pv = aa_sub["Presence"].fillna("N/A").astype(str).str.strip().value_counts()
+                ws.cell(row=row_num, column=1, value="Presence Summary:").font = Font(name="Calibri", size=10, bold=True, color=navy)
+                for pi, (pk, pcount) in enumerate(pv.items(), 2):
+                    ws.cell(row=row_num, column=pi, value=f"{pk}: {pcount}").font = data_font
+                row_num += 1
+
+            row_num += 1
+
+        # ── LTC attributes ──
+        if la_sub is not None and not la_sub.empty:
+            avail = [c for c in ltc_cols if c in la_sub.columns]
+            nc = len(avail)
+
+            ws.merge_cells(start_row=row_num, start_column=1, end_row=row_num, end_column=max(nc, 5))
+            sep = ws.cell(row=row_num, column=1, value=f"  LTC PHYSICAL ATTRIBUTES ({n_la} rows)")
+            sep.font = section_font
+            sep.fill = PatternFill("solid", fgColor="7C3AED")
+            sep.alignment = Alignment(horizontal="left", vertical="center")
+            ws.row_dimensions[row_num].height = 26
+            row_num += 1
+
+            for ci, h in enumerate(avail, 1):
+                cell = ws.cell(row=row_num, column=ci, value=h)
+                cell.font = header_font; cell.fill = header_fill
+                cell.alignment = header_align; cell.border = thin_border
+            ws.row_dimensions[row_num].height = 24
+            row_num += 1
+
+            for _, attr_row in la_sub.iterrows():
+                is_alt = (row_num % 2 == 0)
+                for ci, col_name in enumerate(avail, 1):
+                    val = attr_row.get(col_name, "")
+                    if pd.isna(val):
+                        val = ""
+                    cell = ws.cell(row=row_num, column=ci, value=str(val))
+                    cell.font = data_font; cell.alignment = data_align; cell.border = thin_border
+                    if col_name == "Presence":
+                        sv = str(val).strip().lower()
+                        if sv in ("mandatory", "required", "m"):
+                            cell.fill = PatternFill("solid", fgColor=green_bg)
+                            cell.font = Font(name="Calibri", size=10, bold=True, color=green_fg)
+                        elif sv in ("optional", "o"):
+                            cell.fill = PatternFill("solid", fgColor=blue_bg)
+                            cell.font = Font(name="Calibri", size=10, color=blue_fg)
+                        else:
+                            cell.fill = alt_fill if is_alt else white_fill
+                    else:
+                        cell.fill = alt_fill if is_alt else white_fill
+                row_num += 1
+
+            row_num += 1
+            if "Presence" in la_sub.columns:
+                pv = la_sub["Presence"].fillna("N/A").astype(str).str.strip().value_counts()
+                ws.cell(row=row_num, column=1, value="Presence Summary:").font = Font(name="Calibri", size=10, bold=True, color=navy)
+                for pi, (pk, pcount) in enumerate(pv.items(), 2):
+                    ws.cell(row=row_num, column=pi, value=f"{pk}: {pcount}").font = data_font
+                row_num += 1
+
+            row_num += 1
+
+        # ── Attribute gap analysis ──
+        a_names = set(aa_sub["Name"].dropna().str.strip().str.lower()) if aa_sub is not None and "Name" in aa_sub.columns else set()
+        l_names = set(la_sub["Name"].dropna().str.strip().str.lower()) if la_sub is not None and "Name" in la_sub.columns else set()
+        if a_names or l_names:
+            common = a_names & l_names
+            only_a = a_names - l_names
+            only_l = l_names - a_names
+
+            ws.merge_cells(start_row=row_num, start_column=1, end_row=row_num, end_column=5)
+            sep = ws.cell(row=row_num, column=1, value="  ATTRIBUTE GAP ANALYSIS")
+            sep.font = Font(name="Calibri", size=10, bold=True, color=white)
+            sep.fill = PatternFill("solid", fgColor=orange_fg)
+            sep.alignment = Alignment(horizontal="left", vertical="center")
+            ws.row_dimensions[row_num].height = 26
+            row_num += 1
+
+            for metric, value in [("Common Attributes", len(common)), ("Only in Aramco", len(only_a)), ("Only in LTC", len(only_l))]:
+                mc = ws.cell(row=row_num, column=1, value=metric)
+                mc.font = Font(name="Calibri", size=10, bold=True, color=navy)
+                mc.border = thin_border; mc.fill = white_fill
+                vc = ws.cell(row=row_num, column=2, value=value)
+                vc.font = data_font; vc.border = thin_border
+                vc.alignment = center_align; vc.fill = white_fill
+                row_num += 1
+
+            if only_a:
+                row_num += 1
+                ws.cell(row=row_num, column=1, value="Attributes Only in Aramco:").font = Font(name="Calibri", size=10, bold=True, color=orange_fg)
+                row_num += 1
+                for name in sorted(only_a):
+                    ws.cell(row=row_num, column=1, value=name).font = data_font
+                    row_num += 1
+
+            if only_l:
+                row_num += 1
+                ws.cell(row=row_num, column=1, value="Attributes Only in LTC:").font = Font(name="Calibri", size=10, bold=True, color=blue_fg)
+                row_num += 1
+                for name in sorted(only_l):
+                    ws.cell(row=row_num, column=1, value=name).font = data_font
+                    row_num += 1
+
+        # Column widths
+        col_widths = {1: 18, 2: 35, 3: 18, 4: 35, 5: 35, 6: 12, 7: 10, 8: 14, 9: 12, 10: 20, 11: 14}
+        for ci, w in col_widths.items():
+            ws.column_dimensions[get_column_letter(ci)].width = w
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf.getvalue()
+
+
 # ══════════════════════════════════════════════════════════════════════
 # UI
 # ══════════════════════════════════════════════════════════════════════
@@ -2524,7 +2817,7 @@ with tab_attrs:
 
             attr_view = st.radio(
                 "View mode",
-                ["Browse by Class", "Discipline-wise Attributes", "Discipline File Summary", "Full Aramco Attributes", "Full LTC Attributes", "Attribute Comparison"],
+                ["Browse by Class", "Discipline-wise Attributes", "Discipline File Summary", "Attribute Analysis", "Full Aramco Attributes", "Full LTC Attributes", "Attribute Comparison"],
                 horizontal=True,
             )
 
@@ -2861,6 +3154,175 @@ with tab_attrs:
                                     st.metric("Only Aramco", len(only_a))
                                 with g3:
                                     st.metric("Only LTC", len(only_l))
+
+            elif attr_view == "Attribute Analysis":
+                # Standalone analysis — only Aramco + LTC attributes, no harmonization needed
+                # Groups by Discipline column directly from attribute sheets
+                if aramco_attrs is None and ltc_attrs is None:
+                    st.warning("Upload **Aramco** or **LTC** files first. This view reads the Discipline column directly from their attribute sheets.")
+                else:
+                    st.markdown("""
+                    <div class="section-card">
+                        <h3>Attribute Analysis by Discipline</h3>
+                        <p style="color: var(--kbr-gray); font-size: 0.85rem; margin: 0;">
+                            Standalone analysis of Aramco &amp; LTC attributes grouped by discipline.
+                            No harmonization required — reads the Discipline column directly from attribute sheets.
+                        </p>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                    # Group Aramco attributes by Discipline
+                    aa_by_disc = {}
+                    if aramco_attrs is not None and not aramco_attrs.empty and "Discipline" in aramco_attrs.columns:
+                        for disc_val, grp in aramco_attrs.groupby(aramco_attrs["Discipline"].fillna("Unclassified").astype(str).str.strip()):
+                            key = disc_val if disc_val and disc_val != "nan" else "Unclassified"
+                            aa_by_disc[key] = grp
+
+                    # Group LTC attributes by Discipline
+                    la_by_disc = {}
+                    if ltc_attrs is not None and not ltc_attrs.empty and "Discipline" in ltc_attrs.columns:
+                        for disc_val, grp in ltc_attrs.groupby(ltc_attrs["Discipline"].fillna("Unclassified").astype(str).str.strip()):
+                            key = disc_val if disc_val and disc_val != "nan" else "Unclassified"
+                            la_by_disc[key] = grp
+
+                    all_disc = sorted(set(list(aa_by_disc.keys()) + list(la_by_disc.keys())))
+
+                    if not all_disc:
+                        st.warning("No Discipline column found in the uploaded attribute sheets.")
+                    else:
+                        # KPI row
+                        total_aramco = len(aramco_attrs) if aramco_attrs is not None else 0
+                        total_ltc = len(ltc_attrs) if ltc_attrs is not None else 0
+                        kpi_c1, kpi_c2, kpi_c3 = st.columns(3)
+                        with kpi_c1:
+                            st.metric("Disciplines", len(all_disc))
+                        with kpi_c2:
+                            st.metric("Total Aramco Attributes", total_aramco)
+                        with kpi_c3:
+                            st.metric("Total LTC Attributes", total_ltc)
+
+                        st.divider()
+
+                        # Overview table
+                        ov_rows = []
+                        for disc in all_disc:
+                            aa_sub = aa_by_disc.get(disc)
+                            la_sub = la_by_disc.get(disc)
+                            n_aa = len(aa_sub) if aa_sub is not None else 0
+                            n_la = len(la_sub) if la_sub is not None else 0
+                            u_aa = len(aa_sub["Name"].dropna().unique()) if aa_sub is not None and "Name" in aa_sub.columns else 0
+                            u_la = len(la_sub["Name"].dropna().unique()) if la_sub is not None and "Name" in la_sub.columns else 0
+                            # Presence breakdown
+                            mand_aa = 0
+                            opt_aa = 0
+                            if aa_sub is not None and "Presence" in aa_sub.columns:
+                                p_vals = aa_sub["Presence"].fillna("").astype(str).str.strip().str.lower()
+                                mand_aa = int(p_vals.isin(["mandatory", "required", "m"]).sum())
+                                opt_aa = int(p_vals.isin(["optional", "o"]).sum())
+                            mand_la = 0
+                            opt_la = 0
+                            if la_sub is not None and "Presence" in la_sub.columns:
+                                p_vals = la_sub["Presence"].fillna("").astype(str).str.strip().str.lower()
+                                mand_la = int(p_vals.isin(["mandatory", "required", "m"]).sum())
+                                opt_la = int(p_vals.isin(["optional", "o"]).sum())
+                            # Common / gap
+                            a_names = set(aa_sub["Name"].dropna().str.strip().str.lower()) if aa_sub is not None and "Name" in aa_sub.columns else set()
+                            l_names = set(la_sub["Name"].dropna().str.strip().str.lower()) if la_sub is not None and "Name" in la_sub.columns else set()
+                            common = len(a_names & l_names)
+                            only_a = len(a_names - l_names)
+                            only_l = len(l_names - a_names)
+                            ov_rows.append({
+                                "Discipline": disc,
+                                "Aramco Rows": n_aa,
+                                "Aramco Unique": u_aa,
+                                "Aramco Mandatory": mand_aa,
+                                "Aramco Optional": opt_aa,
+                                "LTC Rows": n_la,
+                                "LTC Unique": u_la,
+                                "LTC Mandatory": mand_la,
+                                "LTC Optional": opt_la,
+                                "Common Attrs": common,
+                                "Only Aramco": only_a,
+                                "Only LTC": only_l,
+                            })
+                        ov_df = pd.DataFrame(ov_rows)
+                        st.markdown("#### Overview by Discipline")
+                        st.dataframe(ov_df, use_container_width=True, hide_index=True)
+
+                        # Export button
+                        aa_export = _build_attribute_analysis_excel(all_disc, aa_by_disc, la_by_disc)
+                        st.download_button(
+                            "Export Attribute Analysis (Excel)",
+                            data=aa_export,
+                            file_name="attribute_analysis_by_discipline.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True,
+                        )
+
+                        st.divider()
+
+                        # Per-discipline detail
+                        for disc in all_disc:
+                            aa_sub = aa_by_disc.get(disc)
+                            la_sub = la_by_disc.get(disc)
+                            n_aa = len(aa_sub) if aa_sub is not None else 0
+                            n_la = len(la_sub) if la_sub is not None else 0
+
+                            with st.expander(f"{disc} — Aramco: {n_aa} / LTC: {n_la} attributes"):
+                                # Aramco
+                                if aa_sub is not None and not aa_sub.empty:
+                                    st.markdown(f"**Aramco Functional Attributes ({n_aa})**")
+                                    display_cols = [c for c in ["Class_Id", "Class_Desc", "Name",
+                                                                 "Attribute_Desc", "Presence", "Size",
+                                                                 "UomClassId", "ValidationRule"] if c in aa_sub.columns]
+                                    st.dataframe(aa_sub[display_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
+
+                                    # Presence breakdown
+                                    if "Presence" in aa_sub.columns:
+                                        p_counts = aa_sub["Presence"].fillna("N/A").astype(str).str.strip().value_counts()
+                                        st.markdown("**Presence breakdown:**  " + "  |  ".join(f"`{k}`: {v}" for k, v in p_counts.items()))
+                                else:
+                                    st.info("No Aramco attributes for this discipline.")
+
+                                st.divider()
+
+                                # LTC
+                                if la_sub is not None and not la_sub.empty:
+                                    st.markdown(f"**LTC Physical Attributes ({n_la})**")
+                                    display_cols = [c for c in ["Class_Id", "Name", "Description",
+                                                                 "Presence", "Size", "UomClassId",
+                                                                 "ValidationRule", "Aspect"] if c in la_sub.columns]
+                                    st.dataframe(la_sub[display_cols].reset_index(drop=True), use_container_width=True, hide_index=True)
+
+                                    if "Presence" in la_sub.columns:
+                                        p_counts = la_sub["Presence"].fillna("N/A").astype(str).str.strip().value_counts()
+                                        st.markdown("**Presence breakdown:**  " + "  |  ".join(f"`{k}`: {v}" for k, v in p_counts.items()))
+                                else:
+                                    st.info("No LTC attributes for this discipline.")
+
+                                # Attribute gap
+                                if aa_sub is not None and la_sub is not None:
+                                    st.divider()
+                                    a_names = set(aa_sub["Name"].dropna().str.strip().str.lower()) if "Name" in aa_sub.columns else set()
+                                    l_names = set(la_sub["Name"].dropna().str.strip().str.lower()) if "Name" in la_sub.columns else set()
+                                    common = a_names & l_names
+                                    only_a = a_names - l_names
+                                    only_l = l_names - a_names
+                                    g1, g2, g3 = st.columns(3)
+                                    with g1:
+                                        st.metric("Common", len(common))
+                                    with g2:
+                                        st.metric("Only in Aramco", len(only_a))
+                                    with g3:
+                                        st.metric("Only in LTC", len(only_l))
+                                    if only_a:
+                                        with st.expander(f"Attributes only in Aramco ({len(only_a)})"):
+                                            for n in sorted(only_a):
+                                                st.markdown(f"- {n}")
+                                    if only_l:
+                                        with st.expander(f"Attributes only in LTC ({len(only_l)})"):
+                                            for n in sorted(only_l):
+                                                st.markdown(f"- {n}")
 
             elif attr_view == "Full Aramco Attributes":
                 if aramco_attrs is not None:
