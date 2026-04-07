@@ -18,13 +18,12 @@ Built by the **KBR AMCDE Team**
 8. [Feature Guide](#feature-guide)
    - [Upload & Configure](#1-upload--configure)
    - [Dashboard](#2-dashboard)
-   - [Gap Analysis](#3-gap-analysis)
-   - [Enrichment Suggestions](#4-enrichment-suggestions)
-   - [Attributes Explorer](#5-attributes-explorer)
-   - [Connection Map](#6-connection-map)
-   - [Search](#7-search)
-   - [Batch Process](#8-batch-process)
-   - [Logs](#9-logs)
+   - [Gap Analysis & Enrichment Suggestions](#3-gap-analysis--enrichment-suggestions)
+   - [Attributes Explorer](#4-attributes-explorer)
+   - [Connection Map](#5-connection-map)
+   - [Search](#6-search)
+   - [Batch Process](#7-batch-process)
+   - [Logs](#8-logs)
 9. [Harmonization Engine — How It Works](#harmonization-engine--how-it-works)
    - [Fuzzy Matching Algorithm](#fuzzy-matching-algorithm)
    - [Compound Name Expansion](#compound-name-expansion)
@@ -38,8 +37,11 @@ Built by the **KBR AMCDE Team**
 11. [Demo Mode](#demo-mode)
 12. [File Format Requirements](#file-format-requirements)
 13. [Configuration](#configuration)
-14. [Tech Stack](#tech-stack)
-15. [Project Structure](#project-structure)
+14. [Running Tests](#running-tests)
+15. [Troubleshooting](#troubleshooting)
+16. [How to Modify or Extend](#how-to-modify-or-extend)
+17. [Tech Stack](#tech-stack)
+18. [Project Structure](#project-structure)
 
 ---
 
@@ -108,9 +110,9 @@ What used to take **weeks of manual effort** now takes **minutes**.
 ## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Streamlit Web UI (8 tabs)                 │
-│  Upload | Dashboard | Gaps | Attributes | Map | Search | …  │
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                         Streamlit Web UI (8 tabs)                            │
+│  Upload | Dashboard | Gap Analysis | Attributes | Map | Search | Batch | Logs │
 └──────────────────────────┬──────────────────────────────────┘
                            │
               ┌────────────┴────────────┐
@@ -131,17 +133,21 @@ What used to take **weeks of manual effort** now takes **minutes**.
     └─────────┘      └─────────┘      └─────────┘
 ```
 
-The entire application is a **single-file Streamlit app** (`backend/main.py`, ~2550 lines) organized into clearly separated sections:
+The application is split into two Python files:
+
+**`backend/main.py`** (~3650 lines) — Streamlit UI layer, organized into:
 
 1. **CSS Theme** — KBR corporate branding (Inter font, navy blue palette, card layouts)
 2. **Session State** — Persistent data across reruns (files, classes, attributes, gaps)
-3. **File Readers** — 5 specialized parsers, one per data source
+3. **File Readers** — Local copies of the 5 source parsers (call core.py equivalents internally)
 4. **Attribute Readers** — Aramco Functional + LTC Physical class attributes
-5. **Harmonization Engine** — Fuzzy matching + gap detection + reverse gap computation
-6. **Demo Data** — Built-in sample data for testing
+5. **Harmonization Engine** — Fuzzy matching helpers + wrapper that calls `core.run_harmonization()`
+6. **Demo Data** — Wrapper that calls `core.get_demo_data()` and adds SA Doc demo records
 7. **Excel Builders** — Professional styled exports (harmonization report + enriched master)
 8. **Graphviz Builders** — Connection diagram generators
-9. **UI Tabs** — 8 interactive tabs with full Streamlit components
+9. **UI Tabs** — 9 interactive tabs with full Streamlit components
+
+**`backend/core.py`** (~650 lines) — Framework-agnostic business logic (no Streamlit dependency). This is the canonical source for all matching and parsing algorithms. It can be imported and tested independently.
 
 ---
 
@@ -168,10 +174,30 @@ Each reader gracefully falls back to the first sheet if the expected sheet name 
 
 ### Prerequisites
 
-- Python 3.9 or higher
-- pip (Python package manager)
+- **Python 3.9 or higher** (3.11 recommended)
+- **pip** (Python package manager)
+- **Graphviz** — required for Connection Map diagrams. This is a **system-level install**, not a pip package:
+  - **Windows**: Download installer from https://graphviz.org/download/ and add to PATH
+  - **macOS**: `brew install graphviz`
+  - **Linux (Ubuntu/Debian)**: `sudo apt-get install graphviz`
+  - After installing, verify with: `dot -V` in a terminal
+  - If Graphviz is not installed, all other tabs work fine — only the Connection Map tab will fail to render diagrams
 
-### Install Dependencies
+### Recommended: Use a Virtual Environment
+
+```bash
+python -m venv venv
+
+# Activate (Windows)
+venv\Scripts\activate
+
+# Activate (macOS/Linux)
+source venv/bin/activate
+```
+
+This keeps project dependencies isolated from your system Python.
+
+### Install Python Dependencies
 
 ```bash
 cd backend
@@ -195,7 +221,11 @@ cd backend
 streamlit run main.py
 ```
 
-The app will open in your browser at `http://localhost:8501`.
+The app will open automatically in your browser at `http://localhost:8501`.
+
+To stop the app, press `Ctrl+C` in the terminal.
+
+> **Note:** The `backend/uploads/` directory is where Streamlit temporarily stores uploaded files during a session. It is included in `.gitignore` so uploaded data files are never committed to the repository. The `.gitkeep` file inside it exists only to keep the empty folder tracked by git.
 
 ---
 
@@ -213,9 +243,9 @@ The app will open in your browser at `http://localhost:8501`.
    - Bar chart for match rates by source
    - Score distribution histogram
 4. Check the **Gap Analysis** tab for:
-   - Forward gaps (master classes missing from non-master sources)
-   - **Enrichment Suggestions** (non-master classes not in the master — scroll down)
-5. Explore **Connection Map** for visual diagrams
+   - Forward gaps (master classes missing from non-master sources) at the top
+   - **Enrichment Suggestions** section (scroll down within the same tab) — non-master classes not in the master
+5. Explore **Connection Map** for visual diagrams (requires Graphviz installed)
 6. Use **Search** to find specific equipment classes
 7. Click **Export Full Report** to download the KBR-branded Excel report
 
@@ -257,20 +287,22 @@ A comprehensive analytics view with:
 - **Class Detail Browser** — Expandable list of every equipment class with master reference and comparison results, filterable by "All", "No Gaps only", or "Has Gaps only"
 - **Full Data Table** — Complete harmonization results in a sortable, searchable Streamlit dataframe
 
-### 3. Gap Analysis
+### 3. Gap Analysis & Enrichment Suggestions
 
-Forward gap analysis — classes in the master that are missing from non-master sources:
+This tab covers two types of gap analysis in one place:
+
+**Part A — Forward Gap Analysis**
+
+Classes in the master that are missing from non-master sources:
 
 - **Gap chart** — Bar chart showing gap count per source
 - **Gap metrics** — Per-source gap counts
 - **Filterable gap table** — Filter by source, shows Equipment Class, Found In, Gap In, and recommended Action
 - **Action Items** — Numbered list of specific remediation steps
 
-### 4. Enrichment Suggestions
+**Part B — Enrichment Suggestions** (scroll down within the same tab)
 
-Reverse gap analysis — classes in non-master sources that don't exist in the master:
-
-This is the key differentiator. When a non-master source (e.g., KBR with 200 classes) has more equipment classes than the master (e.g., Aramco with 146), the system:
+Reverse gap analysis — classes in non-master sources that don't exist in the master. This is the key differentiator. When a non-master source (e.g., KBR with 200 classes) has more equipment classes than the master (e.g., Aramco with 146), the system:
 
 1. **Detects** all unmatched non-master records
 2. **Shows metrics** — how many extra classes per source
@@ -284,7 +316,7 @@ The enriched Excel includes:
 - **Enrichment Summary sheet** — Original count, additions count, new total
 - **Class Attributes sheet** — ISM Functional Class Attributes organized by equipment class with color-coded Presence column (green = mandatory, blue = optional)
 
-### 5. Attributes Explorer
+### 4. Attributes Explorer
 
 Four view modes:
 
@@ -297,7 +329,9 @@ Four view modes:
   - Attributes only in LTC (gaps in Aramco)
   - Side-by-side attribute tables
 
-### 6. Connection Map
+> **Note:** This tab requires Aramco and/or LTC files that contain the optional attribute sheets (`ISM Functional Class Attributes` and `ISM Physical Class Attributes`). If those sheets are absent, the tab will show an empty state.
+
+### 5. Connection Map
 
 Graphviz-powered visual diagrams:
 
@@ -307,7 +341,9 @@ Graphviz-powered visual diagrams:
   - Dashed red nodes: GAP sources with "NO MATCH" labels
 - **Overview (first 20)** — Shows the first 20 classes in a single large graph with all connections
 
-### 7. Search
+> **Requires Graphviz** to be installed at the system level — see [Installation & Setup](#installation--setup).
+
+### 6. Search
 
 Intelligent single-class lookup:
 
@@ -316,7 +352,9 @@ Intelligent single-class lookup:
 - Uses **dual scorer** — tries both `token_set_ratio` and `token_sort_ratio`, takes the best result
 - Shows: match score, status, master reference entries, all source matches/gaps, and a connection diagram
 
-### 8. Batch Process
+> Harmonization must be run first before Search is functional.
+
+### 7. Batch Process
 
 Process multiple equipment names at once:
 
@@ -325,7 +363,9 @@ Process multiple equipment names at once:
 - Results table shows: Input, Best Match, Score%, Status, Gap In
 - Download results as CSV
 
-### 9. Logs
+> Harmonization must be run first before Batch Process is functional.
+
+### 8. Logs
 
 Operational log of all harmonization activities:
 
@@ -533,6 +573,160 @@ The **Match Threshold** slider (50-100%) controls the minimum fuzzy match score 
 
 ---
 
+## Running Tests
+
+The test suite covers all functions in `core.py`. To run it:
+
+```bash
+# From the repo root
+pip install pytest
+pytest tests/test_main_functions.py -v
+```
+
+All tests should pass. The suite covers:
+- `_safe_str`, `_normalize_abbreviations`, `_tokenize`, `_has_word_overlap`, `_expand_compound_names`
+- `fuzzy_match` and `classify_match` with edge cases (abbreviations, compound names, false positives)
+- All 5 file readers with generated in-memory Excel files
+- `read_aramco_attributes` and `read_ltc_attributes`
+- `run_harmonization` (single master, dual master, reverse gaps)
+- `build_export_df` and `get_demo_data`
+
+No real data files are required — the tests generate their own in-memory Excel files.
+
+---
+
+## Troubleshooting
+
+### App won't start
+
+**Symptom:** `ModuleNotFoundError` when running `streamlit run main.py`
+
+**Fix:** Make sure you installed dependencies from inside the `backend/` folder:
+```bash
+cd backend
+pip install -r requirements.txt
+```
+
+---
+
+### Connection Map shows a blank or error
+
+**Symptom:** Connection Map tab shows an error or empty output
+
+**Cause:** Graphviz is not installed at the system level (it is not a pip package).
+
+**Fix:** Install Graphviz for your OS (see [Installation & Setup](#installation--setup)) and restart the app.
+
+---
+
+### Uploaded file causes an error or produces 0 records
+
+**Symptom:** After uploading a file, the source shows 0 records or an error
+
+**Causes and fixes:**
+- Wrong sheet name — check the [File Format Requirements](#file-format-requirements) section for the exact expected sheet name per source
+- Wrong column names — the reader looks for specific column names (e.g., `Class Name (855)` for KBR, not `ClassName`). Compare your file headers to the required columns listed in File Format Requirements
+- The file is password-protected — remove the password before uploading
+- The file is `.csv` but the reader expects `.xlsx` — save as Excel first
+
+> **Tip:** Use the **Load Demo Data** button to verify the app is working correctly before uploading your real files.
+
+---
+
+### Harmonization produces unexpected gaps
+
+**Symptom:** Equipment classes that seem similar are showing as GAP
+
+**Causes and fixes:**
+- The match threshold is too high — try lowering it (e.g., from 75% to 65%)
+- The names are too different for fuzzy matching (e.g., completely different terminology between sources) — this is a genuine data inconsistency, not a bug
+- The word overlap check is rejecting the match — this happens when two names have a high fuzzy score but share no meaningful words (intentional safety feature)
+
+---
+
+### Streamlit reruns unexpectedly / data disappears
+
+**Symptom:** Clicking anything resets the uploaded files or results
+
+**Cause:** This is normal Streamlit behavior — any widget interaction triggers a rerun. The app stores all data in `st.session_state` to survive reruns. If data disappears completely, the browser session was reset (e.g., browser tab closed and reopened).
+
+**Fix:** Re-upload files and re-run harmonization.
+
+---
+
+### Excel export is empty or missing sheets
+
+**Symptom:** Downloaded Excel file has no data
+
+**Cause:** Harmonization was not run before clicking Export.
+
+**Fix:** Always click **Run Harmonization** first, then export.
+
+---
+
+### Port 8501 already in use
+
+**Symptom:** `Address already in use` error when starting the app
+
+**Fix:** Either stop the other process using port 8501, or run on a different port:
+```bash
+streamlit run main.py --server.port 8502
+```
+
+---
+
+## How to Modify or Extend
+
+### Add a new data source
+
+1. **Add a reader function** in `core.py` following the same pattern as `read_aramco()`:
+   - Returns a list of dicts with at minimum: `id`, `name`, `source`
+   - Falls back to sheet 0 if the named sheet is not found
+2. **Register the reader** in the `READERS` dict in `core.py`
+3. **Add the source key and display name** to `FILE_TYPES` in `core.py`
+4. **Add a color** to `SOURCE_COLORS` in `core.py`
+5. **Copy the reader function** into `main.py` (to keep local copies in sync) and add it to the local `READERS` dict in `main.py`
+6. **Add a file uploader** in the Upload & Configure tab section of `main.py` (search for the other `st.file_uploader` calls and follow the same pattern)
+
+### Change the match threshold defaults
+
+In `main.py`, find the `DEFAULTS` dict near the top:
+```python
+DEFAULTS = {
+    ...
+    "match_threshold": 75,   # ← change this default value
+    ...
+}
+```
+
+The slider min/max is set in the Upload & Configure tab UI section — search for `match_threshold` in `main.py` to find the slider definition.
+
+### Change match score classification bands
+
+In `core.py`, edit the `classify_match()` function. The thresholds (95, 85, 75) are currently hardcoded there. Update them to change how scores map to "Exact Match", "Strong Match", "Partial Match", and "Weak Match" labels.
+
+### Add a new abbreviation
+
+In `core.py`, add an entry to the `ABBREVIATIONS` dict:
+```python
+ABBREVIATIONS = {
+    ...
+    "your_abbr": "full expansion",
+}
+```
+
+This affects both the matching engine and the word overlap validator.
+
+### Modify the Excel export styling
+
+The KBR color constants (hex strings) are defined at the top of `build_excel_bytes()` in `main.py`. Search for `kbr_primary = "003087"` to find the styling block. The same pattern exists in `build_enriched_master_excel()`.
+
+### Add a new tab to the UI
+
+In `main.py`, find the tab definition block (search for `st.tabs(`). Add a new label to the list, then add the corresponding `with tab_N:` block after the existing ones, following the same structure.
+
+---
+
 ## Tech Stack
 
 | Component | Technology | Purpose |
@@ -552,15 +746,13 @@ The **Match Threshold** slider (50-100%) controls the minimum fuzzy match score 
 ```
 RDL/
 ├── backend/
-│   ├── main.py              # Streamlit UI — all 9 tabs, Excel builders, session state (~3650 lines)
+│   ├── main.py              # Streamlit UI — all 8 tabs, Excel builders, session state (~3650 lines)
 │   ├── core.py              # Framework-agnostic engine — readers, fuzzy match, harmonization (~650 lines)
-│   ├── requirements.txt     # Python dependencies
+│   ├── requirements.txt     # Python dependencies (pip install -r requirements.txt)
 │   └── uploads/
-│       └── .gitkeep         # Upload directory placeholder (user files are gitignored)
+│       └── .gitkeep         # Keeps uploads/ folder in git; actual uploaded files are gitignored
 ├── tests/
 │   └── test_main_functions.py  # pytest suite covering core.py functions (~600 lines)
-├── launcher.py              # Entry point for standalone .exe (finds free port, opens browser)
-├── build_exe.py             # PyInstaller build script — produces dist/RDL/RDL.exe
 ├── .gitignore
 └── README.md                # This file
 ```
