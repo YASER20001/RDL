@@ -1,7 +1,19 @@
 """
 KBR RDL Data Harmonizer — Core Engine Module
-Pure business logic functions, independent of UI framework.
-Used by main.py (Streamlit) and future FastAPI backend.
+=============================================
+
+Pure business logic, framework-agnostic (no Streamlit, no VIKTOR).
+Imported by backend/main.py (Streamlit UI).
+
+Module layout:
+  1. Constants         – source keys, colors, abbreviation map
+  2. Utility helpers   – string/text normalization functions
+  3. Matching engine   – fuzzy_match() and classify_match()
+  4. File readers      – one reader per data source (Aramco, CFIHOS, KBR, LTC, SA Doc)
+  5. Attribute readers – read_aramco_attributes() / read_ltc_attributes()
+  6. Harmonization     – run_harmonization() orchestrates the full pipeline
+  7. Export helpers    – build_export_df(), lookup_cfihos()
+  8. Demo data         – get_demo_data() for testing without real files
 """
 
 import re
@@ -82,6 +94,12 @@ def _normalize_abbreviations(text):
 
 
 def _tokenize(text):
+    """Extract meaningful word tokens from text for overlap checking.
+
+    Splits on non-alpha characters, keeps words of 2+ letters, and removes
+    common noise words (articles, prepositions, generic class labels) so that
+    only domain-meaningful terms are compared.
+    """
     words = set(re.findall(r'[a-z]{2,}', text.lower()))
     noise = {"the", "and", "for", "with", "from", "that", "this", "its",
              "type", "class", "system", "item", "general", "other", "misc"}
@@ -89,16 +107,32 @@ def _tokenize(text):
 
 
 def _has_word_overlap(name_a, name_b):
+    """Return True if the two equipment names share at least one meaningful word.
+
+    Used as a guard after fuzzy scoring to reject high-score-but-wrong matches
+    (e.g. "Pump" vs "Compressor" could score 60+ on token_set_ratio).
+
+    The check cascades through three levels:
+      1. Direct token intersection on original names.
+      2. Token intersection after abbreviation expansion (handles "HX" → "Heat Exchanger").
+      3. Substring containment between token pairs (handles "centrif" ↔ "centrifugal").
+    Returns True if *any* level finds overlap, or if either name produces no
+    tokens at all (empty names are considered compatible to avoid false gaps).
+    """
     tokens_a = _tokenize(name_a)
     tokens_b = _tokenize(name_b)
+    # Empty token sets — can't determine overlap, treat as compatible
     if not tokens_a or not tokens_b:
         return True
+    # Level 1: direct token intersection
     if tokens_a & tokens_b:
         return True
+    # Level 2: abbreviation-expanded intersection
     exp_a = set(_tokenize(_normalize_abbreviations(name_a)))
     exp_b = set(_tokenize(_normalize_abbreviations(name_b)))
     if exp_a & exp_b:
         return True
+    # Level 3: substring containment (catches prefix/suffix variants)
     all_a = tokens_a | exp_a
     all_b = tokens_b | exp_b
     for a in all_a:
@@ -109,6 +143,16 @@ def _has_word_overlap(name_a, name_b):
 
 
 def _expand_compound_names(candidates):
+    """Expand slash-separated compound names into individual matchable strings.
+
+    Some sources use "Shell and Tube / Plate Heat Exchanger" as a single class
+    name. This function returns two parallel lists:
+      - expanded_names: flat list of all name strings (original + split parts)
+      - index_map: maps each expanded entry back to its index in `candidates`
+
+    This allows fuzzy matching against each component individually, then the
+    result is resolved back to the original candidate record via index_map.
+    """
     expanded_names = []
     index_map = []
     for i, c in enumerate(candidates):
@@ -125,6 +169,26 @@ def _expand_compound_names(candidates):
 # Matching engine
 # ──────────────────────────────────────────────────────────────────────
 def fuzzy_match(name, candidates, threshold):
+    """Find the best-matching record for *name* within *candidates*.
+
+    Strategy (three-pass, best-score wins):
+      1. token_sort_ratio on original names — handles word-order differences.
+      2. token_sort_ratio on abbreviation-expanded names — catches "HX" ↔ "Heat Exchanger".
+      3. token_set_ratio on original names — catches subset/superset names
+         like "Control Valve" ↔ "Control Valve Assembly".
+
+    The query is also split on "/" so compound names are tried part-by-part.
+    After finding the best candidate, _has_word_overlap() is applied as a
+    semantic guard to reject false positives (e.g., "Drum" ↔ "Motor").
+
+    Args:
+        name:       Equipment class name to look up.
+        candidates: List of {"id": ..., "name": ..., "source": ..., ...} dicts.
+        threshold:  Minimum similarity score (0–100) to consider a match.
+
+    Returns:
+        Matched candidate dict (with an added "score" key) or None if no match.
+    """
     if not candidates:
         return None
     expanded_names, index_map = _expand_compound_names(candidates)
@@ -168,6 +232,20 @@ def fuzzy_match(name, candidates, threshold):
 
 
 def classify_match(score):
+    """Translate a numeric similarity score into a human-readable label + confidence.
+
+    Score bands:
+      95–100 → "Exact Match"   / High   (effectively identical names)
+      85–94  → "Strong Match"  / High   (minor wording difference)
+      75–84  → "Partial Match" / Medium (recognisably the same equipment type)
+      <75    → "Weak Match"    / Low    (marginal, review recommended)
+
+    Args:
+        score: Integer similarity score from fuzzy_match() (0–100).
+
+    Returns:
+        Tuple of (status_label: str, confidence: str).
+    """
     if score >= 95:
         return "Exact Match", "High"
     elif score >= 85:
@@ -182,6 +260,14 @@ def classify_match(score):
 # File readers
 # ──────────────────────────────────────────────────────────────────────
 def read_aramco(file) -> list[dict]:
+    """Parse a Saudi Aramco 9COM ISM Functional Classes Excel file.
+
+    Expected sheet: "ISM Functional Classes"
+    Expected columns: Id, Name, nmcltr:CFIHOS_1.5
+
+    Falls back to sheet index 0 if the named sheet is not found.
+    Skips rows where Name is blank.
+    """
     try:
         df = pd.read_excel(file, sheet_name="ISM Functional Classes")
     except (ValueError, KeyError):
@@ -201,6 +287,13 @@ def read_aramco(file) -> list[dict]:
 
 
 def read_cfihos(file) -> list[dict]:
+    """Parse a CFIHOS standard equipment class Excel file.
+
+    Expected sheet: "equipment class"
+    Expected columns: CFIHOS unique id, equipment class name
+
+    Falls back to sheet index 0 if the named sheet is not found.
+    """
     try:
         df = pd.read_excel(file, sheet_name="equipment class")
     except (ValueError, KeyError):
@@ -219,6 +312,11 @@ def read_cfihos(file) -> list[dict]:
 
 
 def read_kbr(file) -> list[dict]:
+    """Parse a KBR FEED class library Excel file.
+
+    Reads the first sheet (no fixed sheet name).
+    Expected columns: Class Id, Class Name (855), Discipline
+    """
     df = pd.read_excel(file, sheet_name=0)
     records = []
     for row in df.to_dict("records"):
@@ -235,6 +333,15 @@ def read_kbr(file) -> list[dict]:
 
 
 def read_ltc(file) -> list[dict]:
+    """Parse an LTC (Lump-sum Turnkey Contractor) ISM class Excel file.
+
+    Tries sheets in order: "ISM Physical Classes", "ISM Functional Classes",
+    then falls back to sheet index 0 if neither is found.
+    Expected columns: Id, Name
+
+    LTC names often include bracket annotations like "[OBSOLETE]" — these are
+    stripped automatically so only the clean equipment name is kept.
+    """
     df = None
     for sheet in ("ISM Physical Classes", "ISM Functional Classes"):
         try:
@@ -259,6 +366,13 @@ def read_ltc(file) -> list[dict]:
 
 
 def read_sa_doc(file) -> list[dict]:
+    """Parse a Saudi Aramco SA Document attributes Excel file.
+
+    Expected sheet: "SA_DOC_attributes"
+    Expected columns: ID (CFIHOS_1.5), Attribute, Name (CFIHOS_1.5)
+
+    Falls back to sheet index 0 if the named sheet is not found.
+    """
     try:
         df = pd.read_excel(file, sheet_name="SA_DOC_attributes")
     except (ValueError, KeyError):
@@ -495,7 +609,22 @@ def run_harmonization(masters, files, threshold):
 
 
 def build_export_df(classes, masters):
-    """Build export DataFrame."""
+    """Build a flat pandas DataFrame from harmonization results for Excel export.
+
+    Each row represents one canonical class. Columns include:
+      - Sequence number (#)
+      - Master source ID + Name (one pair per master)
+      - Cross-match score between masters (if dual-master mode)
+      - For each non-master source: ID, Name, Match%, Status
+      - Gap summary (which sources are missing this class)
+
+    Args:
+        classes: List of harmonized class dicts from run_harmonization().
+        masters: List of master source keys (e.g. ["aramco"]).
+
+    Returns:
+        pandas DataFrame ready for to_excel().
+    """
     non_master_sources = set()
     for c in classes:
         non_master_sources.update(c["matches"].keys())

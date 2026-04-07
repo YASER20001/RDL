@@ -1,6 +1,37 @@
 """
-KBR RDL Data Harmonizer v3.0 — Streamlit App
-Run:  streamlit run main.py
+KBR RDL Data Harmonizer v3.0 — Streamlit Application
+=====================================================
+
+Entry point:  streamlit run backend/main.py
+Standalone:   python launcher.py  (or RDL.exe after running build_exe.py)
+
+Architecture overview
+---------------------
+This file is the complete Streamlit UI layer.  All pure business logic lives
+in core.py so it can be reused independently of Streamlit.
+
+    core.py          — framework-agnostic engine (readers, fuzzy match, harmonization)
+    main.py (this)   — Streamlit UI + thin wrapper functions that call core.py
+
+Note on local function copies
+------------------------------
+Several helper functions (_tokenize, _has_word_overlap, _expand_compound_names,
+fuzzy_match, the file readers) exist both here and in core.py.  The copies in
+this file are used by local Excel-building and enrichment functions that were
+written before the core module was extracted.  The canonical source of truth
+for those algorithms is core.py; the two sets are functionally identical.
+
+Tab layout (in render order)
+-----------------------------
+  Tab 1 — Upload & Configure    upload files, select masters, set threshold
+  Tab 2 — Dashboard             KPI cards, status charts, discipline breakdown
+  Tab 3 — Gap Analysis          per-class gap table, filter, download
+  Tab 4 — Enrichment Suggestions  reverse-gap additions, CFIHOS lookup, export
+  Tab 5 — Attributes Explorer   side-by-side Aramco vs LTC attribute browsing
+  Tab 6 — Connection Map        Graphviz diagrams per class or all-classes overview
+  Tab 7 — Search                single-class lookup across all sources
+  Tab 8 — Batch Process         multi-name CSV/text batch lookup
+  Tab 9 — Logs                  session-level processing log
 """
 
 import uuid
@@ -343,13 +374,15 @@ for k, v in DEFAULTS.items():
         st.session_state[k] = v
 
 def add_log(msg, level="INFO"):
+    """Append a timestamped log entry to the session log list."""
     st.session_state.logs.append(f"[{level}] {msg}")
 
 
 # ──────────────────────────────────────────────────────────────────────
-# File readers
+# File readers  (local copies — see core.py for full docstrings)
 # ──────────────────────────────────────────────────────────────────────
 def read_aramco(file) -> list[dict]:
+    """Parse Saudi Aramco ISM Functional Classes Excel. See core.read_aramco."""
     try:
         df = pd.read_excel(file, sheet_name="ISM Functional Classes")
     except (ValueError, KeyError):
@@ -369,6 +402,7 @@ def read_aramco(file) -> list[dict]:
 
 
 def read_cfihos(file) -> list[dict]:
+    """Parse CFIHOS standard equipment class Excel. See core.read_cfihos."""
     try:
         df = pd.read_excel(file, sheet_name="equipment class")
     except (ValueError, KeyError):
@@ -387,6 +421,7 @@ def read_cfihos(file) -> list[dict]:
 
 
 def read_kbr(file) -> list[dict]:
+    """Parse KBR FEED class library Excel. See core.read_kbr."""
     df = pd.read_excel(file, sheet_name=0)
     records = []
     for row in df.to_dict("records"):
@@ -403,6 +438,7 @@ def read_kbr(file) -> list[dict]:
 
 
 def read_ltc(file) -> list[dict]:
+    """Parse LTC ISM class Excel, stripping bracket annotations. See core.read_ltc."""
     # Prefer "ISM Physical Classes" (PCL IDs) over "ISM Functional Classes" (FCL IDs)
     df = None
     for sheet in ("ISM Physical Classes", "ISM Functional Classes"):
@@ -429,6 +465,7 @@ def read_ltc(file) -> list[dict]:
 
 
 def read_sa_doc(file) -> list[dict]:
+    """Parse SA Document attributes Excel. See core.read_sa_doc."""
     try:
         df = pd.read_excel(file, sheet_name="SA_DOC_attributes")
     except (ValueError, KeyError):
@@ -558,8 +595,13 @@ def read_ltc_attributes(file) -> pd.DataFrame:
 
 # ──────────────────────────────────────────────────────────────────────
 # Harmonization engine
+# NOTE: These local copies (_tokenize, _has_word_overlap, _expand_compound_names,
+# fuzzy_match) mirror the equivalents in core.py. They exist here because
+# build_excel_bytes and enrichment helpers were written before core.py was
+# extracted. The canonical documented versions live in core.py.
 # ──────────────────────────────────────────────────────────────────────
 def _tokenize(text):
+    """Extract meaningful word tokens (see core.py for full docstring)."""
     words = set(re.findall(r'[a-z]{2,}', text.lower()))
     noise = {"the", "and", "for", "with", "from", "that", "this", "its",
              "type", "class", "system", "item", "general", "other", "misc"}
@@ -567,6 +609,7 @@ def _tokenize(text):
 
 
 def _has_word_overlap(name_a, name_b):
+    """Return True if two equipment names share a meaningful word (see core.py)."""
     tokens_a = _tokenize(name_a)
     tokens_b = _tokenize(name_b)
     if not tokens_a or not tokens_b:
@@ -589,6 +632,7 @@ def _has_word_overlap(name_a, name_b):
 
 
 def _expand_compound_names(candidates):
+    """Expand slash-separated names into matchable parts (see core.py)."""
     expanded_names = []
     index_map = []
     for i, c in enumerate(candidates):
@@ -602,6 +646,7 @@ def _expand_compound_names(candidates):
 
 
 def fuzzy_match(name, candidates, threshold):
+    """Find best-matching record using three-pass fuzzy scoring (see core.py)."""
     if not candidates:
         return None
     expanded_names, index_map = _expand_compound_names(candidates)
