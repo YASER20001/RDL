@@ -18,13 +18,12 @@ Built by the **KBR AMCDE Team**
 8. [Feature Guide](#feature-guide)
    - [Upload & Configure](#1-upload--configure)
    - [Dashboard](#2-dashboard)
-   - [Gap Analysis](#3-gap-analysis)
-   - [Enrichment Suggestions](#4-enrichment-suggestions)
-   - [Attributes Explorer](#5-attributes-explorer)
-   - [Connection Map](#6-connection-map)
-   - [Search](#7-search)
-   - [Batch Process](#8-batch-process)
-   - [Logs](#9-logs)
+   - [Gap Analysis & Enrichment Suggestions](#3-gap-analysis--enrichment-suggestions)
+   - [Attributes Explorer](#4-attributes-explorer)
+   - [Connection Map](#5-connection-map)
+   - [Search](#6-search)
+   - [Batch Process](#7-batch-process)
+   - [Logs](#8-logs)
 9. [Harmonization Engine — How It Works](#harmonization-engine--how-it-works)
    - [Fuzzy Matching Algorithm](#fuzzy-matching-algorithm)
    - [Compound Name Expansion](#compound-name-expansion)
@@ -111,9 +110,9 @@ What used to take **weeks of manual effort** now takes **minutes**.
 ## Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Streamlit Web UI (8 tabs)                 │
-│  Upload | Dashboard | Gaps | Attributes | Map | Search | …  │
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                         Streamlit Web UI (8 tabs)                            │
+│  Upload | Dashboard | Gap Analysis | Attributes | Map | Search | Batch | Logs │
 └──────────────────────────┬──────────────────────────────────┘
                            │
               ┌────────────┴────────────┐
@@ -244,9 +243,9 @@ To stop the app, press `Ctrl+C` in the terminal.
    - Bar chart for match rates by source
    - Score distribution histogram
 4. Check the **Gap Analysis** tab for:
-   - Forward gaps (master classes missing from non-master sources)
-   - **Enrichment Suggestions** (non-master classes not in the master — scroll down)
-5. Explore **Connection Map** for visual diagrams
+   - Forward gaps (master classes missing from non-master sources) at the top
+   - **Enrichment Suggestions** section (scroll down within the same tab) — non-master classes not in the master
+5. Explore **Connection Map** for visual diagrams (requires Graphviz installed)
 6. Use **Search** to find specific equipment classes
 7. Click **Export Full Report** to download the KBR-branded Excel report
 
@@ -288,20 +287,22 @@ A comprehensive analytics view with:
 - **Class Detail Browser** — Expandable list of every equipment class with master reference and comparison results, filterable by "All", "No Gaps only", or "Has Gaps only"
 - **Full Data Table** — Complete harmonization results in a sortable, searchable Streamlit dataframe
 
-### 3. Gap Analysis
+### 3. Gap Analysis & Enrichment Suggestions
 
-Forward gap analysis — classes in the master that are missing from non-master sources:
+This tab covers two types of gap analysis in one place:
+
+**Part A — Forward Gap Analysis**
+
+Classes in the master that are missing from non-master sources:
 
 - **Gap chart** — Bar chart showing gap count per source
 - **Gap metrics** — Per-source gap counts
 - **Filterable gap table** — Filter by source, shows Equipment Class, Found In, Gap In, and recommended Action
 - **Action Items** — Numbered list of specific remediation steps
 
-### 4. Enrichment Suggestions
+**Part B — Enrichment Suggestions** (scroll down within the same tab)
 
-Reverse gap analysis — classes in non-master sources that don't exist in the master:
-
-This is the key differentiator. When a non-master source (e.g., KBR with 200 classes) has more equipment classes than the master (e.g., Aramco with 146), the system:
+Reverse gap analysis — classes in non-master sources that don't exist in the master. This is the key differentiator. When a non-master source (e.g., KBR with 200 classes) has more equipment classes than the master (e.g., Aramco with 146), the system:
 
 1. **Detects** all unmatched non-master records
 2. **Shows metrics** — how many extra classes per source
@@ -315,7 +316,7 @@ The enriched Excel includes:
 - **Enrichment Summary sheet** — Original count, additions count, new total
 - **Class Attributes sheet** — ISM Functional Class Attributes organized by equipment class with color-coded Presence column (green = mandatory, blue = optional)
 
-### 5. Attributes Explorer
+### 4. Attributes Explorer
 
 Four view modes:
 
@@ -328,7 +329,9 @@ Four view modes:
   - Attributes only in LTC (gaps in Aramco)
   - Side-by-side attribute tables
 
-### 6. Connection Map
+> **Note:** This tab requires Aramco and/or LTC files that contain the optional attribute sheets (`ISM Functional Class Attributes` and `ISM Physical Class Attributes`). If those sheets are absent, the tab will show an empty state.
+
+### 5. Connection Map
 
 Graphviz-powered visual diagrams:
 
@@ -338,7 +341,9 @@ Graphviz-powered visual diagrams:
   - Dashed red nodes: GAP sources with "NO MATCH" labels
 - **Overview (first 20)** — Shows the first 20 classes in a single large graph with all connections
 
-### 7. Search
+> **Requires Graphviz** to be installed at the system level — see [Installation & Setup](#installation--setup).
+
+### 6. Search
 
 Intelligent single-class lookup:
 
@@ -347,7 +352,9 @@ Intelligent single-class lookup:
 - Uses **dual scorer** — tries both `token_set_ratio` and `token_sort_ratio`, takes the best result
 - Shows: match score, status, master reference entries, all source matches/gaps, and a connection diagram
 
-### 8. Batch Process
+> Harmonization must be run first before Search is functional.
+
+### 7. Batch Process
 
 Process multiple equipment names at once:
 
@@ -356,7 +363,9 @@ Process multiple equipment names at once:
 - Results table shows: Input, Best Match, Score%, Status, Gap In
 - Download results as CSV
 
-### 9. Logs
+> Harmonization must be run first before Batch Process is functional.
+
+### 8. Logs
 
 Operational log of all harmonization activities:
 
@@ -737,7 +746,7 @@ In `main.py`, find the tab definition block (search for `st.tabs(`). Add a new l
 ```
 RDL/
 ├── backend/
-│   ├── main.py              # Streamlit UI — all 9 tabs, Excel builders, session state (~3650 lines)
+│   ├── main.py              # Streamlit UI — all 8 tabs, Excel builders, session state (~3650 lines)
 │   ├── core.py              # Framework-agnostic engine — readers, fuzzy match, harmonization (~650 lines)
 │   ├── requirements.txt     # Python dependencies (pip install -r requirements.txt)
 │   └── uploads/

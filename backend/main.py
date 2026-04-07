@@ -3,7 +3,6 @@ KBR RDL Data Harmonizer v3.0 — Streamlit Application
 =====================================================
 
 Entry point:  streamlit run backend/main.py
-Standalone:   python launcher.py  (or RDL.exe after running build_exe.py)
 
 Architecture overview
 ---------------------
@@ -21,20 +20,19 @@ this file are used by local Excel-building and enrichment functions that were
 written before the core module was extracted.  The canonical source of truth
 for those algorithms is core.py; the two sets are functionally identical.
 
-Tab layout (in render order)
------------------------------
+Tab layout (8 tabs, in render order)
+--------------------------------------
   Tab 1 — Upload & Configure    upload files, select masters, set threshold
   Tab 2 — Dashboard             KPI cards, status charts, discipline breakdown
-  Tab 3 — Gap Analysis          per-class gap table, filter, download
-  Tab 4 — Enrichment Suggestions  reverse-gap additions, CFIHOS lookup, export
-  Tab 5 — Attributes Explorer   side-by-side Aramco vs LTC attribute browsing
-  Tab 6 — Connection Map        Graphviz diagrams per class or all-classes overview
-  Tab 7 — Search                single-class lookup across all sources
-  Tab 8 — Batch Process         multi-name CSV/text batch lookup
-  Tab 9 — Logs                  session-level processing log
+  Tab 3 — Gap Analysis          forward gap table + Enrichment Suggestions section
+                                  (reverse-gap additions, CFIHOS lookup, export)
+  Tab 4 — Attributes            side-by-side Aramco vs LTC attribute browsing
+  Tab 5 — Connection Map        Graphviz diagrams per class or all-classes overview
+  Tab 6 — Search                single-class lookup across all sources
+  Tab 7 — Batch Process         multi-name CSV/text batch lookup
+  Tab 8 — Logs                  session-level processing log
 """
 
-import uuid
 import io
 import re
 import pandas as pd
