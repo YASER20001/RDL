@@ -552,15 +552,37 @@ The **Match Threshold** slider (50-100%) controls the minimum fuzzy match score 
 ```
 RDL/
 ├── backend/
-│   ├── main.py              # Complete application (~2550 lines)
+│   ├── main.py              # Streamlit UI — all 9 tabs, Excel builders, session state (~3650 lines)
+│   ├── core.py              # Framework-agnostic engine — readers, fuzzy match, harmonization (~650 lines)
 │   ├── requirements.txt     # Python dependencies
 │   └── uploads/
-│       └── .gitkeep         # Upload directory placeholder
+│       └── .gitkeep         # Upload directory placeholder (user files are gitignored)
+├── tests/
+│   └── test_main_functions.py  # pytest suite covering core.py functions (~600 lines)
+├── launcher.py              # Entry point for standalone .exe (finds free port, opens browser)
+├── build_exe.py             # PyInstaller build script — produces dist/RDL/RDL.exe
 ├── .gitignore
 └── README.md                # This file
 ```
 
-The application is intentionally a **single-file design** for simplicity of deployment — no database, no separate API server, no build step. Just install dependencies and run.
+### Architecture
+
+```
+main.py  (Streamlit UI)
+    │
+    ├── imports constants & utilities from core.py
+    ├── calls core.run_harmonization() for the matching pipeline
+    ├── calls core.build_export_df() for the results table
+    └── owns: Excel builders, enrichment logic, all Streamlit tab rendering
+
+core.py  (Business logic — framework-agnostic)
+    ├── File readers  (read_aramco, read_cfihos, read_kbr, read_ltc, read_sa_doc)
+    ├── Matching      (fuzzy_match, classify_match)
+    ├── Pipeline      (run_harmonization → returns harmonized classes + reverse gaps)
+    └── Helpers       (build_export_df, lookup_cfihos, get_demo_data)
+```
+
+The application has **no database and no separate API server** — just install dependencies and run.
 
 ---
 
